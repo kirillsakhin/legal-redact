@@ -164,3 +164,39 @@ Things found while building it, and what they mean:
   Digital signatures are invalidated by redaction.
 - Detector misses are a different problem: the verifier checks that what you decided to
   redact is gone, not that you decided to redact everything.
+
+### Ensemble improvement (change set 2, scored once on holdout v4)
+
+Process: v3 had been scored, so it could no longer judge the next change set. Holdout v4
+(175 docs: new names, new seeds, one new template) was pinned before any change was
+scored. Changes were developed against the dev corpus and the already-read v2 suite, then
+v4 was scored once, with each change as its own arm.
+
+| Arm (holdout v4) | Docs with a leak (95% CI) | PERSON P / R | Protected text damaged | Review queue per doc |
+|---|---|---|---|---|
+| Presidio large alone | 100% | 0.95 / 0.89 | 1.6% | 5.3 |
+| GLiNER alone | 49% (42-56) | 0.99 / 0.98 | 5.3% | 4.7 |
+| previous ensemble (v3 config) | 10% (7-16) | 0.83 / 1.00 | 6.8% | 2.9 |
+| + conflict resolution | 10% (7-16) | 0.85 / 1.00 | 4.9% | 2.5 |
+| + Presidio large instead of small | 10% (6-15) | 0.95 / 1.00 | 4.5% | 1.0 |
+| + organisation/place veto (tried) | 18% (13-25) | 0.96 / 0.99 | 3.9% | 1.3 |
+| **+ name bridging (current)** | **2% (1-5)** | **0.96 / 1.00** | **4.5%** | **0.9** |
+
+What each change did:
+
+- **Conflict resolution** (amounts are not IDs; a suggestion fully inside a more confident
+  one of another category is dropped; coverage cannot shrink): fewer false ID/card/phone
+  suggestions, less damage to amounts.
+- **Presidio large**: most of the name-precision gain and the drop in review workload.
+- **Veto**: made things worse (leaks 10% to 18%) and is not in the current ensemble. Kept
+  in the table as a negative result.
+- **Name bridging** (two names separated only by ", " become one box): removes the leak
+  where "Surname, Firstname" was covered as two boxes with the comma showing. This
+  generator emits that format in about 10% of names, so part of the gain is by
+  construction. How common it is in real contracts is unknown.
+
+Still open on v4: contract dates are sometimes labelled dates of birth (DOB precision 0.60),
+which is the likely source of the remaining 4.5% protected-text damage (not yet confirmed);
+ID span boundaries differ from gold (strict recall 0.79); with the review queue ignored
+51% of documents would leak, so the queue (about one item per document) must be read.
+v4 is now read: the next change set needs a v5.
