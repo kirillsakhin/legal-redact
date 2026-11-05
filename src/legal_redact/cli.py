@@ -85,12 +85,18 @@ def _h2h(args) -> int:
     h2h_out = {}
     arms = [h2h.score_arm("control: unredacted source", docs, src),
             h2h.score_arm("control: oracle export", docs, h2h.make_oracle(docs, src, work / "oracle"))]
-    for mode in ("all", "auto"):
-        out, info = h2h.make_ours(docs, src, work / f"ours_{mode}", mode, det)
-        h2h_out[mode] = out
-        print(f"legal-redact ({mode}): {info['seconds']}s, exports refused by the verifier: {info['refused']}")
-        arms.append(h2h.score_arm(f"legal-redact (accept {'all' if mode == 'all' else 'auto-proposed only'})",
-                                  docs, out))
+    for mode, rep in (("all", False), ("auto", False), ("all", True), ("auto", True)):
+        tag = mode + ("+repeats" if rep else "")
+        out, info = h2h.make_ours(docs, src, work / f"ours_{tag}", mode, det, repeats=rep)
+        if not rep:
+            h2h_out[mode] = out
+        r = info["repeats"]
+        print(f"legal-redact ({tag}): {info['seconds']}s, exports refused by the verifier: {info['refused']}"
+              + (f"; repeats added {r['added']}, real personal data {r['true']}, "
+                 f"touching protected text {r['protected']}" if rep else ""))
+        arms.append(h2h.score_arm(
+            f"legal-redact (accept {'all' if mode == 'all' else 'auto-proposed only'}"
+            f"{', + repeats' if rep else ''})", docs, out))
     for spec in args.external:
         label, path = spec.split("=", 1)
         arms.append(h2h.score_arm(label, docs, h2h.load_external(Path(path))))
@@ -141,6 +147,9 @@ def _redact(args) -> int:
         s.acknowledge(code.strip())
     if args.accept_proposed:
         print(f"bulk-accepted {s.accept_all_proposed_redactions()} proposed redaction(s)")
+    if args.accept_repeats:
+        from .pipeline import add_repeats
+        print(f"accepted {add_repeats(args.pdf, s, accept=True)} other occurrence(s) of accepted text")
     try:
         rep = export(args.pdf, args.out, s)
     except ExportRefused as exc:
@@ -194,6 +203,8 @@ def main(argv: list[str] | None = None) -> int:
     hh.add_argument("--work", required=True, help="working folder (sources and our outputs go here)")
     hh.add_argument("--external", action="append", default=[], metavar="LABEL=results.json",
                     help="an external tool's results.json (from its own harness); repeatable")
+    rd.add_argument("--accept-repeats", action="store_true",
+                    help="also accept every other occurrence of text you accepted (explicit bulk action)")
     be = sub.add_parser("bench-export", help="run the seeded-leak suite against the export verifier")
     be.add_argument("--n", type=int, default=10, help="documents per template")
     args = ap.parse_args(argv)

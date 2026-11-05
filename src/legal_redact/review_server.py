@@ -23,7 +23,7 @@ from urllib.parse import parse_qs, urlparse
 
 import pymupdf
 
-from .pipeline import ExportRefused, export, save_decisions
+from .pipeline import ExportRefused, add_repeats, export, save_decisions
 from .review import ReviewSession
 
 MAX_BODY = 64 * 1024
@@ -89,6 +89,11 @@ class ReviewApp:
             raise ValueError("unknown finding")
         self.session.acknowledge(code, on)
         self._save()
+
+    def repeats(self) -> int:
+        n = add_repeats(self.src, self.session)       # proposed as undecided, never auto-accepted
+        self._save()
+        return n
 
     def bulk(self) -> int:
         n = self.session.accept_all_proposed_redactions()
@@ -194,6 +199,8 @@ def make_server(app: ReviewApp, port: int = 0):
                         app.remove_box(int(body["i"]))
                     elif u.path == "/api/ack":
                         app.ack(str(body["code"]), bool(body["on"]))
+                    elif u.path == "/api/repeats":
+                        return self._json({"added": app.repeats(), "state": app.state()})
                     elif u.path == "/api/bulk":
                         return self._json({"accepted": app.bulk(), "state": app.state()})
                     elif u.path == "/api/export":

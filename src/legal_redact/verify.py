@@ -98,6 +98,27 @@ def needles_from_source(src: str | Path, boxes, categories: list[str]) -> list[t
     return out
 
 
+def needles_from_groups(src: str | Path, groups) -> list[tuple[str, str]]:
+    """One needle per redacted passage, however many lines it spans.
+
+    `groups` is [(category, [(page, rect), ...]), ...]: the boxes of one decision together.
+    Judging each line of a wrapped name separately turns a surname into a stand-alone needle
+    that then matches the same word in kept text (a firm name, say) and refuses a correct export.
+    """
+    doc = pymupdf.open(src)
+    out = []
+    for cat, boxes in groups:
+        words = []
+        for pno, r in boxes:
+            words += [w for w in doc[pno].get_text("words", sort=True)
+                      if r[0] <= (w[0] + w[2]) / 2 <= r[2] and r[1] <= (w[1] + w[3]) / 2 <= r[3]]
+        txt = " ".join(w[4] for w in words)
+        if txt.strip():
+            out.append((cat, txt))
+    doc.close()
+    return out
+
+
 # ---- readers (independent of the writer) -----------------------------------
 def _pdfminer_pages(path) -> list[str]:
     from pdfminer.high_level import extract_text

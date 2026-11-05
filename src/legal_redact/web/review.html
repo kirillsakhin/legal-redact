@@ -103,6 +103,7 @@ aside{overflow-x:hidden}
           <option value="all">All</option>
         </select>
         <button id="bulk" title="Accept every undecided item the policy proposes to redact">Accept proposed redactions</button>
+        <button id="repeats" title="Propose every other occurrence of text you accepted, e.g. a name in the signature block. You still decide each one.">Find repeats</button>
       </div>
       <ul id="list"></ul>
     </section>
@@ -289,6 +290,15 @@ window.addEventListener("resize", () => S && drawBoxes());
   });
 })();
 
+$("repeats").onclick = async () => {
+  try {
+    const r = await api("/api/repeats", {}); setState(r.state);
+    $("filter").value = "todo"; renderList();
+    alert(r.added ? `${r.added} other occurrence(s) of text you accepted were added as undecided. Check each one.`
+                  : "No further occurrences of accepted text were found.");
+  } catch (e) { alert(e.message); }
+};
+
 $("bulk").onclick = async () => {
   const n = S.decisions.filter(d => d.status === "pending" && d.proposed === "redact").length;
   if (!n) { alert("No undecided items are proposed for redaction."); return; }
@@ -302,6 +312,8 @@ $("export").onclick = async () => {
     const r = await api("/api/export", {out: $("out").value}); S = r.state; render();
     res.replaceChildren();
     res.append(el("div", {className: r.ok ? "ready" : "blockers", textContent: r.ok ? `Written: ${r.out}` : `Not exported: ${r.message}`}));
+    if (!r.ok && r.report && r.report.checks.some(c => c.status === "FAIL" && (c.id === "V01" || c.id === "V02")))
+      res.append(el("div", {className: "note", textContent: "Redacted text is still readable elsewhere in the document. Try 'Find repeats' to propose the other occurrences, decide them, then export again."}));
     if (!r.ok && r.blockers && r.blockers.length) { const ul = el("ul", {className: "blockers"}); r.blockers.forEach(b => ul.append(el("li", {textContent: b}))); res.append(ul); }
     if (r.report) {
       const ul = el("ul", {className: "checks"});

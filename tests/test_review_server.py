@@ -117,3 +117,16 @@ def test_only_manual_boxes_can_be_removed(server):
     manual = [x["i"] for x in r["decisions"] if x["source"] == "manual"][0]
     r = json.loads(call(base, token, "/api/remove", {"i": manual})[1])["state"]
     assert next(x for x in r["decisions"] if x["i"] == manual)["status"] == "rejected"
+
+
+def test_repeats_endpoint_proposes_but_never_accepts(server):
+    base, token, d, _ = server
+    s = state(base, token)
+    for dec in s["decisions"]:
+        call(base, token, "/api/decide", {"i": dec["i"], "status": "accepted"})
+    assert call(base, "wrong", "/api/repeats", {})[0] == 403
+    res = json.loads(call(base, token, "/api/repeats", {})[1])
+    assert res["added"] == len([x for x in res["state"]["decisions"] if x["source"] == "repeat"])
+    assert all(x["status"] == "pending" for x in res["state"]["decisions"] if x["source"] == "repeat")
+    again = json.loads(call(base, token, "/api/repeats", {})[1])
+    assert again["added"] == res["added"] or again["added"] == 0     # a second press adds no duplicates

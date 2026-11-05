@@ -151,8 +151,8 @@ A proper install of its prerequisites might behave differently.
 |---|---|---|
 | control: unredacted source | 100% | 0.0% |
 | control: oracle export | 0% (0-2%) | 0.0% |
-| legal-redact, accept every suggestion | 1% (0-4%), 173 released, 2 withheld by the verifier | 4.4% |
-| legal-redact, auto-proposed only (review queue skipped) | 46% (39-54%), 157 released, 18 withheld | 0.4% |
+| legal-redact, accept every suggestion | 1% (0-4%), all 175 released | 4.5% |
+| legal-redact, auto-proposed only (review queue skipped) | 48% (41-56%), 166 released, 9 withheld | 0.7% |
 | doc_redaction, shipped defaults | 100% (98-100%) | 1.6% |
 | doc_redaction, + IBAN, card, location | 86% (80-90%) | 10.1% |
 
@@ -178,15 +178,39 @@ also show the comparison without EMAIL.
   the verifier. So the gap says "layering these detectors recalls more on this data", which we
   expected, not "a better tool in general".
 - Our figure is for accept-every-suggestion with no human decisions, the closest match to a batch
-  tool. It costs more suggestions to read. Skipping our review queue leaves 46% of documents leaking,
-  so the queue is not optional. Withheld exports (2 and 18) are documents where the verifier found
-  a redacted string still readable elsewhere, typically a repeated name that was only caught once.
+  tool. It costs more suggestions to read. Skipping our review queue leaves 48% of documents leaking,
+  so the queue is not optional. The 9 withheld exports in that mode are documents where the same
+  text was redacted in one place and deliberately left readable in another (a queue item that was
+  skipped), which the verifier correctly refuses.
 - doc_redaction is designed around a human review interface, so its batch output is not its intended
   end state. Its strengths are outside this suite: scans and OCR, DOCX, spreadsheets, other
   languages, redaction review workflows.
-- Our protected-text loss (4.4%) is between its two configurations (1.6% and 10.1%).
+- Our protected-text loss (4.5%) is between its two configurations (1.6% and 10.1%).
 - One suite, one run, synthetic data, one tool, version 2.8.1, a workaround on one machine.
   Commercial tools and LLM-based redaction remain unmeasured.
 
 Reproduce: run `scripts/run_doc_redaction.py` with doc_redaction's own Python environment over the
 pinned PDFs, then `legal-redact bench-h2h --work DIR --external "label=results.json"`.
+
+### Correction, and a verifier bug the comparison exposed
+
+The first version of this section reported 173 released and 2 withheld (accept all), and 157
+released and 18 withheld (auto only), and explained the withheld files as repeated names caught only
+once. That explanation was wrong. The verifier built one "redacted text" needle per line box, so a name
+wrapped over two lines became two needles; a lone surname then matched the same word in kept text (a
+firm name) and a correct redaction was refused. It now builds one needle per redacted decision,
+however many lines it spans; a surname surviving elsewhere is a warning, not a failure. A test
+(`test_wrapped_name_is_one_needle_...`) failed before the fix and passes after it. The seeded-leak
+suite still catches 195 of 195 leaky variants with 0 of 15 clean exports wrongly failed, and it now
+builds needles the same way the real export does. The corrected numbers are in the table above.
+
+### Repeat occurrences ("Find repeats")
+
+The review page and `legal-redact redact --accept-repeats` can propose every other occurrence of text
+you accepted (case-insensitive, whitespace-flexible, word boundaries; skips text you also rejected
+and anything already covered). It is unit-tested, including line-wrapped occurrences and a guard
+test that fails when the word-boundary check is removed. **It added nothing on this benchmark**
+(0 proposals in every arm): the ensemble already redacts every occurrence in these documents, and
+in the auto-only arm the remaining occurrences were rejected on purpose. So there is no
+benchmark evidence yet that it helps; it targets a case (inconsistent detection of repeats) these
+synthetic documents do not produce.

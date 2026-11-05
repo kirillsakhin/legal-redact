@@ -23,7 +23,7 @@ from pathlib import Path
 import pymupdf
 
 from ..extract import extract_pages
-from ..pipeline import ExportRefused, export, suggest
+from ..pipeline import ExportRefused, add_repeats, export, suggest
 from ..policy import load_policy
 from ..redact import rects_for_spans, write_redacted
 from .blackbox import BBScore, format_table, score_output, summarize
@@ -52,16 +52,27 @@ def make_oracle(docs, sources, out_dir: Path) -> dict[str, Path | None]:
     return res
 
 
-def make_ours(docs, sources, out_dir: Path, mode: str, detector, policy_name="counterparty"):
-    """mode: 'all' or 'auto'. Returns ({doc_id: path or None}, {'refused': n, 'seconds': s})."""
+def make_ours(docs, sources, out_dir: Path, mode: str, detector, policy_name="counterparty",
+              repeats: bool = False):
+    """mode: 'all' or 'auto'. repeats: also accept every other occurrence of accepted text.
+    Returns ({doc_id: path or None}, info) with refusals, timing and repeat statistics."""
     assert mode in ("all", "auto")
     out_dir.mkdir(parents=True, exist_ok=True)
     pol, res, refused, t0 = load_policy(policy_name), {}, 0, time.perf_counter()
+    rep = {"added": 0, "true": 0, "protected": 0}
     for d in docs:
         s = suggest(str(sources[d.doc_id]), detector, pol)
         for i, dec in enumerate(s.decisions):
             take = dec.status == "pending" and (mode == "all" or dec.proposed == "redact")
             (s.accept if take else s.reject)(i)
+        if repeats:
+            before = len(s.decisions)
+            add_repeats(str(sources[d.doc_id]), s, accept=True)
+            for dec in s.decisions[before:]:
+                rep["added"] += 1
+                rep["true"] += any(g.category == dec.category and min(g.end, dec.end) > max(g.start, dec.start)
+                                   for g in d.gold)
+                rep["protected"] += any(min(q.end, dec.end) > max(q.start, dec.start) for q in d.protected)
         for f in s.findings:
             s.acknowledge(f.code)
         p = out_dir / f"{d.doc_id}.pdf"
@@ -71,7 +82,7 @@ def make_ours(docs, sources, out_dir: Path, mode: str, detector, policy_name="co
         except ExportRefused:
             res[d.doc_id] = None
             refused += 1
-    return res, {"refused": refused, "seconds": round(time.perf_counter() - t0, 1)}
+    return res, {"refused": refused, "seconds": round(time.perf_counter() - t0, 1), "repeats": rep}
 
 
 def load_external(results_json: Path) -> dict[str, Path | None]:

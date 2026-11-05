@@ -14,3 +14,6 @@ First version; developed on synthetic documents only.
   scripts, bookmarks and hidden text.
 - Independent export verifier (pdfminer.six, pypdfium2, pikepdf) and a seeded-leak suite.
 - Synthetic benchmark with hash-pinned held-out suites; results in `docs/BENCHMARKS.md`.
+- Head-to-head harness with a black-box output scorer, compared against doc_redaction 2.8.1.
+- "Find repeats" in the review page and `--accept-repeats`: propose other occurrences of accepted text.
+- Verifier fix: a name wrapped over two lines is one needle, not one per line (it refused correct exports).

@@ -59,7 +59,7 @@ legal-redact review contract.pdf
 
 Opens a local page showing each suggestion over the document with its category, confidence,
 detector and reason. Accept, reject or draw your own box (`j`/`k` move, `a` accept, `r` reject,
-`d` draw). Export stays disabled until nothing is undecided and every pre-flight finding is
+`d` draw). "Find repeats" proposes every other occurrence of text you accepted; you still decide each. Export stays disabled until nothing is undecided and every pre-flight finding is
 acknowledged, and the verification report is shown on the page.
 
 Command line:

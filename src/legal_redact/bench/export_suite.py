@@ -22,7 +22,7 @@ import pymupdf
 
 from ..extract import extract_pages
 from ..redact import rects_for_spans, write_redacted
-from ..verify import needles_from_source, verify_export
+from ..verify import needles_from_groups, verify_export
 from .synth import SynthDoc, corpus, render_pdf
 
 
@@ -140,8 +140,11 @@ def run(n_docs: int = 12, seed0: int = 0) -> dict:
     for i, doc in enumerate(docs):
         src = tmp / f"s{i}.pdf"
         src.write_bytes(render_pdf(doc))
-        boxes, cats, _ = _boxes(src, doc)
-        needles = needles_from_source(src, boxes, cats)
+        boxes, cats, spans = _boxes(src, doc)
+        pages = extract_pages(pymupdf.open(src))
+        groups = [(g.category, [(p, r) for p, r in rects_for_spans(pages, [sp])])
+                  for g, sp in zip(doc.gold, spans)]          # one needle per decision, as in export()
+        needles = needles_from_groups(src, groups)
         clean = tmp / f"c{i}.pdf"
         write_redacted(src, clean, boxes)
         rep = verify_export(src, clean, boxes, needles)

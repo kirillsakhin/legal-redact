@@ -19,8 +19,9 @@ from .extract import extract_pages
 from .policy import Decision, Policy, propose
 from .preflight import preflight
 from .redact import write_redacted
+from .repeats import find_repeats
 from .review import ReviewSession
-from .verify import VerifyReport, needles_from_source, verify_export
+from .verify import VerifyReport, needles_from_groups, verify_export
 
 
 class ExportRefused(Exception):
@@ -39,6 +40,21 @@ def suggest(src: str, detector: Detector, policy: Policy) -> ReviewSession:
         for d in decisions:
             d.rects = tuple((r.x0, r.y0, r.x1, r.y1) for r in pages[d.page].locate(d.start, d.end))
     return ReviewSession(decisions, findings)
+
+
+def add_repeats(src: str, session: ReviewSession, accept: bool = False) -> int:
+    """Propose (or, if `accept`, accept) every other occurrence of each accepted text.
+    Accepting automatically is an explicit bulk action: the CLI exposes it as a flag."""
+    doc = pymupdf.open(src)
+    try:
+        new = find_repeats(session.decisions, extract_pages(doc))
+    finally:
+        doc.close()
+    for d in new:
+        if accept:
+            d.status = "accepted"
+        session.decisions.append(d)
+    return len(new)
 
 
 def save_decisions(session: ReviewSession, path: str) -> None:
@@ -66,14 +82,14 @@ def export(src: str, out: str, session: ReviewSession, keep_failed: bool = False
         accepted = session.redactions()          # raises PermissionError while the gate is closed
     except PermissionError as exc:
         raise ExportRefused(str(exc)) from None
-    boxes, cats = [], []
+    boxes, groups = [], []
     for d in accepted:
-        for r in d.rects:
-            boxes.append((d.page, r))
-            cats.append(d.category)
+        mine = [(d.page, r) for r in d.rects]
+        boxes += mine
+        groups.append((d.category, mine))
     if not boxes:
         raise ExportRefused("no redactions accepted; nothing to export")
-    needles = needles_from_source(src, boxes, cats)
+    needles = needles_from_groups(src, groups)       # one needle per decision, even if it wraps
     fd, tmp = tempfile.mkstemp(suffix=".pdf", dir=str(Path(out).resolve().parent))
     os.close(fd)
     try:
