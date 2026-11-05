@@ -39,9 +39,17 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     ins = sub.add_parser("inspect", help="pre-flight check of a PDF")
     ins.add_argument("pdf")
+    bn = sub.add_parser("bench", help="run the synthetic benchmark")
+    bn.add_argument("--detector", default="rules", choices=["rules"])
+    bn.add_argument("--n", type=int, default=30, help="documents per template")
+    bn.add_argument("--seed", type=int, default=0)
+    bn.add_argument("--show-misses", action="store_true")
     args = ap.parse_args(argv)
     if args.cmd == "inspect":
         return _inspect(args.pdf)
+    if args.cmd == "bench":
+        from .bench.run import main_bench
+        return main_bench(args.detector, args.n, args.seed, args.show_misses)
     return 2
 
 

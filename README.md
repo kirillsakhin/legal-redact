@@ -40,3 +40,22 @@ All test documents are synthetic.
 
 AGPL-3.0-or-later (see `LICENSE`). PDF writing uses PyMuPDF, which is AGPL-3.0 or
 commercially licensed by Artifex.
+
+## Benchmark (Phase 2)
+
+```
+legal-redact bench --n 30 --show-misses
+```
+
+Generates synthetic contracts from 4 templates, renders them to PDF, re-extracts
+the text, and scores a detector with leave-template-out evaluation. Reports
+per-category precision/recall, documents with at least one residual leak,
+protected-text damage (over-redaction) and the leaked spans.
+
+**Read the numbers with care.** The rules baseline scores 1.00 on structured
+categories (email, phone, IBAN, card, ID, DOB, address) because the synthetic
+generator and the regexes were written by the same hands: the formats match by
+construction. That shows the harness works, not that rules are this good on real
+contracts. The informative result is PERSON (precision 0.72, recall 0.92 on
+the first run; every miss is an ALL-CAPS signature name) and the 28% of documents
+with a residual leak. Real-document accuracy is unknown and is not claimed.
