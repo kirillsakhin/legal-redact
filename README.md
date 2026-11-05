@@ -98,6 +98,8 @@ On synthetic documents, with a hash-pinned held-out suite (175 documents) that n
 - The export verifier caught 195 of 195 deliberately leaky exports across 13 leak routes and wrongly
   failed 0 of 15 clean ones.
 
+Against doc_redaction 2.8.1 run in batch mode on the same suite, it left 56 to 86% of documents with a readable personal string depending on configuration and categories counted, versus 1% for ours when every suggestion is accepted. That is a home-field result: the categories and formats are ours, and the gap mostly reflects layering several detectors on top of a Presidio-only baseline.
+
 These numbers say how the pieces behave under a controlled protocol. They are not evidence about
 real contracts. The protocol, the failed attempts (an organisation-name veto made things worse),
 the caveats and the open problems are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
@@ -110,7 +112,7 @@ the caveats and the open problems are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md
   that you decided to redact everything. Read every page.
 - Redactions at the very start of a line can shift the following text; the verifier warns.
 - Contract dates are sometimes mistaken for dates of birth (suggestions you can reject).
-- Not compared against doc_redaction, commercial tools or LLM-based redaction.
+- Compared against one other tool only (doc_redaction 2.8.1, on our own synthetic suite, with a workaround; see docs/BENCHMARKS.md). Not compared against commercial tools or LLM-based redaction.
 
 ## Security and privacy
 

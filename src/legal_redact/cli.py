@@ -71,6 +71,49 @@ def _suggest(args) -> int:
     return 0
 
 
+def _h2h(args) -> int:
+    from pathlib import Path
+    from .bench import h2h
+    from .bench.holdout import holdout4_corpus
+    from .bench.synth import corpus
+    det = _detector("ensemble")
+    if det is None:
+        return 2
+    docs, work = holdout4_corpus(), Path(args.work)
+    src = h2h.write_sources(docs, work / "in")
+    det.fit(corpus(per_template=30, seed0=0))          # threshold fitted on the dev corpus only
+    h2h_out = {}
+    arms = [h2h.score_arm("control: unredacted source", docs, src),
+            h2h.score_arm("control: oracle export", docs, h2h.make_oracle(docs, src, work / "oracle"))]
+    for mode in ("all", "auto"):
+        out, info = h2h.make_ours(docs, src, work / f"ours_{mode}", mode, det)
+        h2h_out[mode] = out
+        print(f"legal-redact ({mode}): {info['seconds']}s, exports refused by the verifier: {info['refused']}")
+        arms.append(h2h.score_arm(f"legal-redact (accept {'all' if mode == 'all' else 'auto-proposed only'})",
+                                  docs, out))
+    for spec in args.external:
+        label, path = spec.split("=", 1)
+        arms.append(h2h.score_arm(label, docs, h2h.load_external(Path(path))))
+    print()
+    print(h2h.table(arms))
+    # Fairer cut: only the categories a tool exposes. doc_redaction's command line has no ID or
+    # date-of-birth entity, and its shipped default has no IBAN or card.
+    six = {"PERSON", "EMAIL", "PHONE", "ADDRESS", "IBAN", "CARD"}
+    four = {"PERSON", "EMAIL", "PHONE", "ADDRESS"}
+    maps = {"all": h2h_out["all"], "auto": h2h_out["auto"]}
+    rows = []
+    for label, cats in (("PERSON/EMAIL/PHONE/ADDRESS", four), ("+ IBAN, CARD", six)):
+        rows.append(h2h.score_arm(f"legal-redact (accept all) [{label}]", docs, maps["all"], cats))
+        for spec in args.external:
+            ext_label, path = spec.split("=", 1)
+            if ("shipped" in ext_label) == (cats is four):
+                rows.append(h2h.score_arm(f"{ext_label} [{label}]", docs, h2h.load_external(Path(path)), cats))
+    print()
+    print("restricted to the categories each tool exposes (a document leaks only if one of these leaked):")
+    print(h2h.table(rows))
+    return 0
+
+
 def _review(args) -> int:
     from pathlib import Path
     from .pipeline import load_decisions, save_decisions, suggest
@@ -147,6 +190,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="decisions file to resume or create (default: <pdf>.decisions.json)")
     rv.add_argument("--port", type=int, default=0)
     rv.add_argument("--no-browser", action="store_true")
+    hh = sub.add_parser("bench-h2h", help="score our tool and external tools' output PDFs identically")
+    hh.add_argument("--work", required=True, help="working folder (sources and our outputs go here)")
+    hh.add_argument("--external", action="append", default=[], metavar="LABEL=results.json",
+                    help="an external tool's results.json (from its own harness); repeatable")
     be = sub.add_parser("bench-export", help="run the seeded-leak suite against the export verifier")
     be.add_argument("--n", type=int, default=10, help="documents per template")
     args = ap.parse_args(argv)
@@ -156,6 +203,8 @@ def main(argv: list[str] | None = None) -> int:
         return _redact(args)
     if args.cmd == "review":
         return _review(args)
+    if args.cmd == "bench-h2h":
+        return _h2h(args)
     if args.cmd == "bench-export":
         from .bench import export_suite
         res = export_suite.run(args.n)

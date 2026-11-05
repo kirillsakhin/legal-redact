@@ -117,3 +117,76 @@ legal-redact bench-export --n 15
 
 Detector arms other than `rules` need the `ml` extra and the models (see the README). GPU is
 optional. Scores can differ slightly between machines and library versions.
+
+## Head-to-head with doc_redaction
+
+[doc_redaction](https://github.com/seanpedrick-case/doc_redaction) (AGPL-3.0) is the closest
+open-source tool. It was run as a separate program in its own environment (never bundled or
+copied), and every output PDF was scored the same way as ours, from the output file only
+(`bench/blackbox.py`): a gold personal-data string still extractable by pdfminer.six or pypdfium2
+is a leak; a protected string no longer extractable is lost. Controls in the same table: the
+unredacted source (must leak everything, and does: 100%) and an oracle export built from the gold
+labels (must leak nothing and lose nothing, and does: 0%).
+
+**This is a home-field comparison.** The categories, formats and layouts are ours, and our
+detectors were developed on documents of the same family. doc_redaction got no tuning at all.
+Treat the gap as an upper bound on any real advantage.
+
+Setup, exactly: PyPI release 2.8.1 (GitHub `main` was 2.9.0), Python 3.14, PyMuPDF 1.28.2, `Local text`
+extraction (the PDFs have selectable text) and local Presidio with `en_core_web_lg`, no OCR, no
+human review, 175 holdout-v4 documents. Two configurations: its shipped default entity list
+(`TITLES, PERSON, PHONE_NUMBER, EMAIL_ADDRESS, STREETNAME, UKPOSTCODE, CUSTOM`) and that list plus
+`IBAN_CODE, CREDIT_CARD, LOCATION`. Its command line exposes no entity for IDs or dates of birth.
+
+**A workaround was needed.** On this machine the documented command fails, including on the tool's
+own example PDF: it opens `placeholder_image_<n>.png` in the working directory and crashes when
+the file is missing (Poppler, which it expects, is not installed, and I did not download
+third-party binaries). We supplied a real 300 dpi render of each page under that name
+(`scripts/run_doc_redaction.py`). Output boxes were checked by eye and sit correctly over the text.
+A proper install of its prerequisites might behave differently.
+
+### Results (175 documents, holdout v4)
+
+| Tool and mode | Docs with a readable personal string (95% CI) | Protected text lost |
+|---|---|---|
+| control: unredacted source | 100% | 0.0% |
+| control: oracle export | 0% (0-2%) | 0.0% |
+| legal-redact, accept every suggestion | 1% (0-4%), 173 released, 2 withheld by the verifier | 4.4% |
+| legal-redact, auto-proposed only (review queue skipped) | 46% (39-54%), 157 released, 18 withheld | 0.4% |
+| doc_redaction, shipped defaults | 100% (98-100%) | 1.6% |
+| doc_redaction, + IBAN, card, location | 86% (80-90%) | 10.1% |
+
+Restricting to the categories each tool exposes (a document leaks only if one of those leaked):
+
+| Categories | legal-redact (accept all) | doc_redaction |
+|---|---|---|
+| PERSON, EMAIL, PHONE, ADDRESS | 1% | 82% (75-87%), shipped defaults |
+| + IBAN, CARD | 1% | 64% (57-71%), extended |
+| PERSON, PHONE, ADDRESS, IBAN, CARD (no EMAIL) | 1% | 56% (49-63%), extended |
+
+**About the email column.** doc_redaction leaked 33% of email strings. All 58 were on the reserved
+`.test` domain; every `.org` and `.eu` address was redacted. Presidio's email recognizer does not
+treat `.test` as an address, and a third of this suite's emails use it, so the number is an
+artifact of the synthetic data that penalises Presidio-based tools. The tables above therefore
+also show the comparison without EMAIL.
+
+### What this does and does not show
+
+- doc_redaction here behaves much like Presidio (large model) alone, which we had already measured:
+  names recall about 0.8 to 0.9, no address/DOB/ID recognizers in the default setup. What we add is
+  GLiNER, structured-identifier rules with checksums, conflict resolution, consensus review and
+  the verifier. So the gap says "layering these detectors recalls more on this data", which we
+  expected, not "a better tool in general".
+- Our figure is for accept-every-suggestion with no human decisions, the closest match to a batch
+  tool. It costs more suggestions to read. Skipping our review queue leaves 46% of documents leaking,
+  so the queue is not optional. Withheld exports (2 and 18) are documents where the verifier found
+  a redacted string still readable elsewhere, typically a repeated name that was only caught once.
+- doc_redaction is designed around a human review interface, so its batch output is not its intended
+  end state. Its strengths are outside this suite: scans and OCR, DOCX, spreadsheets, other
+  languages, redaction review workflows.
+- Our protected-text loss (4.4%) is between its two configurations (1.6% and 10.1%).
+- One suite, one run, synthetic data, one tool, version 2.8.1, a workaround on one machine.
+  Commercial tools and LLM-based redaction remain unmeasured.
+
+Reproduce: run `scripts/run_doc_redaction.py` with doc_redaction's own Python environment over the
+pinned PDFs, then `legal-redact bench-h2h --work DIR --external "label=results.json"`.
