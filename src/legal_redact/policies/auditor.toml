@@ -1,0 +1,13 @@
+name = "auditor"
+description = "Illustrative: sharing with an auditor who needs to know who signed. Names are for a human to decide; financial and identity data are removed."
+min_confidence = 0.5
+
+[actions]
+PERSON = "review"
+EMAIL = "review"
+PHONE = "redact"
+ADDRESS = "redact"
+ID = "redact"
+IBAN = "redact"
+CARD = "redact"
+DOB = "redact"

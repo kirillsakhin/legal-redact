@@ -1,0 +1,13 @@
+name = "counterparty"
+description = "Illustrative: sharing a contract with the other side. Remove every personal identifier."
+min_confidence = 0.5
+
+[actions]
+PERSON = "redact"
+EMAIL = "redact"
+PHONE = "redact"
+ADDRESS = "redact"
+ID = "redact"
+IBAN = "redact"
+CARD = "redact"
+DOB = "redact"

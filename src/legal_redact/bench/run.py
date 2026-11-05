@@ -64,14 +64,45 @@ def format_summary(s: Summary) -> str:
     return "\n".join(out)
 
 
-def main_bench(detector: str, n: int, seed: int, show_misses: bool) -> int:
+def registry():
+    """name -> zero-argument factory. Imports are lazy so `rules` needs no ML stack."""
+    from ..detect.ensemble import EnsembleDetector
+    from ..detect.gliner_det import GlinerDetector
+    from ..detect.presidio_det import PresidioDetector
     from ..detect.rules import RulesDetector
-    factories = {"rules": RulesDetector}
+    kn, ur = "knowledgator/gliner-pii-base-v1.0", "urchade/gliner_multi_pii-v1"
+    return {
+        "rules": RulesDetector,
+        "presidio": PresidioDetector,
+        "gliner-kn": lambda: GlinerDetector(kn),
+        "gliner-ur": lambda: GlinerDetector(ur),
+        "ensemble": lambda: EnsembleDetector(
+            [RulesDetector(), PresidioDetector(), GlinerDetector(kn)], "ensemble(rules+presidio+gliner-kn)"),
+    }
+
+
+def main_bench(detectors: list[str], n: int, seed: int, show_misses: bool) -> int:
+    import time
+    reg = registry()
     docs = corpus(per_template=n, seed0=seed, templates=TEMPLATES)
-    summary, misses = leave_template_out(factories[detector], docs)
-    print(format_summary(summary))
-    if show_misses:
-        print("\nleaked spans (SYNTHETIC text):")
-        for d, (cat, a, b) in misses[:40]:
-            print(f"  {d.doc_id} {cat:8} {d.text[a:b]!r}")
+    rows = []
+    for name in detectors:
+        t0 = time.perf_counter()
+        summary, misses = leave_template_out(reg[name], docs)
+        dt = time.perf_counter() - t0
+        print(format_summary(summary))
+        print(f"wall time: {dt:.1f}s for {len(docs)} docs\n")
+        if show_misses:
+            print("leaked spans (SYNTHETIC text):")
+            for d, (cat, a, b) in misses[:40]:
+                print(f"  {d.doc_id} {cat:8} {d.text[a:b]!r}")
+            print()
+        rows.append((summary, dt))
+    if len(rows) > 1:
+        print("comparison")
+        print(f"{'detector':44} {'PERSON P':>8} {'PERSON R':>8} {'leak docs':>9} {'prot dmg':>8}")
+        for s, _ in rows:
+            pm = s.per_category.get("PERSON", {})
+            print(f"{s.detector:44} {pm.get('precision', float('nan')):8.2f} "
+                  f"{pm.get('recall', float('nan')):8.2f} {s.doc_leak_rate:9.0%} {s.protected_damage_rate:8.1%}")
     return 0

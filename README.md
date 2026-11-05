@@ -59,3 +59,27 @@ construction. That shows the harness works, not that rules are this good on real
 contracts. The informative result is PERSON (precision 0.72, recall 0.92 on
 the first run; every miss is an ALL-CAPS signature name) and the 28% of documents
 with a residual leak. Real-document accuracy is unknown and is not claimed.
+
+### Detector comparison (Phase 3, one run, 120 synthetic documents, 4 held-out templates)
+
+| Detector | PERSON precision | PERSON recall | Docs with a leak | Protected text damaged |
+|---|---|---|---|---|
+| rules | 0.72 | 0.92 | 28% | 0.0% |
+| Presidio (spaCy small) | 0.70 | 0.84 | 97% | 2.2% |
+| GLiNER `knowledgator/gliner-pii-base-v1.0` | 1.00 | 0.99 | 30% | 0.0% |
+| GLiNER `urchade/gliner_multi_pii-v1` | 1.00 | 0.35 | 97% | 0.0% |
+| **ensemble** (rules + Presidio + GLiNER-kn, union merge) | 0.59 | 1.00 | **2%** | 2.2% |
+
+What the numbers do and do not say:
+
+- Presidio alone has no address or date-of-birth recognizer and missed most `.test`
+  e-mail addresses in this setup, so its leak rate says little about its design.
+- GLiNER-kn found names well but missed every lease "ID number" (ID recall 0.67);
+  the rules caught those. The detectors fail in different places, which is why the
+  ensemble leaks least. It buys that with many extra suggestions (PERSON precision 0.59),
+  i.e. more review work, and 2.2% of protected spans touched.
+- GLiNER's threshold is tuned on the training templates only. Model choice mattered
+  a lot: the two GLiNER weights differ by 0.64 PERSON recall.
+- Caveats: one seed, 4 templates, invented names from a short list, no wrapped
+  or hyphenated lines. GLiNER's training data is not known to exclude text like this.
+  These are results on synthetic documents, not evidence about real client files.

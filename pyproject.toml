@@ -7,13 +7,14 @@ name = "legal-redact"
 version = "0.0.1"
 description = "Local, review-first PDF redaction for lawyers, with independent export checks."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = { text = "AGPL-3.0-or-later" }
 dependencies = ["pymupdf>=1.24"]
 
 [project.optional-dependencies]
 verify = ["pdfminer.six", "pypdfium2", "pikepdf"]
 dev = ["pytest", "reportlab"]
+ml = ["gliner", "presidio-analyzer", "spacy", "torch"]
 
 [project.scripts]
 legal-redact = "legal_redact.cli:main"
@@ -23,3 +24,6 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.setuptools.package-data]
+legal_redact = ["policies/*.toml"]

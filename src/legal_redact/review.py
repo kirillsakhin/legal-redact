@@ -1,0 +1,79 @@
+"""Stage 3b: the human review state machine.
+
+This is the legal gate. The model recommends, the lawyer decides, and export is
+impossible until:
+  1. no pre-flight REFUSE finding exists,
+  2. every proposed item has an explicit accept/reject, and
+  3. every pre-flight REVIEW finding has been acknowledged by code.
+The report produced here contains counts and codes only, never document text.
+"""
+from __future__ import annotations
+
+from collections import Counter
+
+from .models import Finding, Severity
+from .policy import Decision
+
+MANUAL = "MANUAL"
+
+
+class ReviewSession:
+    def __init__(self, decisions: list[Decision], findings: list[Finding]):
+        self.decisions = decisions
+        self.findings = findings
+        self.acknowledged: set[str] = set()
+
+    # --- decisions ---------------------------------------------------------
+    def accept(self, i: int) -> None:
+        self.decisions[i].status = "accepted"
+
+    def reject(self, i: int) -> None:
+        self.decisions[i].status = "rejected"
+
+    def accept_all_proposed_redactions(self) -> int:
+        """Explicit bulk action: accept every pending item the policy proposes to redact.
+        Items proposed as `review` stay pending: they need a human look."""
+        n = 0
+        for d in self.decisions:
+            if d.status == "pending" and d.proposed == "redact":
+                d.status, n = "accepted", n + 1
+        return n
+
+    def add_manual(self, page: int, start: int, end: int, note: str = "added by reviewer") -> int:
+        self.decisions.append(Decision(page, start, end, MANUAL, note, "reviewer", 1.0,
+                                       "redact", "accepted", "manual"))
+        return len(self.decisions) - 1
+
+    def acknowledge(self, code: str) -> None:
+        self.acknowledged.add(code)
+
+    # --- gate --------------------------------------------------------------
+    def pending(self) -> list[int]:
+        return [i for i, d in enumerate(self.decisions) if d.status == "pending"]
+
+    def blockers(self) -> list[str]:
+        out = [f"refused by pre-flight {f.code}" for f in self.findings
+               if f.severity is Severity.REFUSE]
+        if self.pending():
+            out.append(f"{len(self.pending())} suggestion(s) have no decision")
+        for code in sorted({f.code for f in self.findings
+                            if f.severity is Severity.REVIEW} - self.acknowledged):
+            out.append(f"pre-flight {code} not acknowledged")
+        return out
+
+    def can_export(self) -> bool:
+        return not self.blockers()
+
+    def redactions(self) -> list[Decision]:
+        if not self.can_export():
+            raise PermissionError("export blocked: " + "; ".join(self.blockers()))
+        return [d for d in self.decisions if d.status == "accepted"]
+
+    def report(self) -> dict:
+        return {
+            "by_status": dict(Counter(d.status for d in self.decisions)),
+            "by_category": dict(Counter(d.category for d in self.decisions if d.status == "accepted")),
+            "manual_additions": sum(d.source == "manual" for d in self.decisions),
+            "acknowledged_findings": sorted(self.acknowledged),
+            "blockers": self.blockers(),
+        }
