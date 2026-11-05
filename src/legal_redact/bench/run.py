@@ -74,16 +74,62 @@ def registry():
     return {
         "rules": RulesDetector,
         "presidio": PresidioDetector,
+        "presidio-lg": lambda: PresidioDetector(model="en_core_web_lg"),
         "gliner-kn": lambda: GlinerDetector(kn),
         "gliner-ur": lambda: GlinerDetector(ur),
         "ensemble": lambda: EnsembleDetector(
-            [RulesDetector(), PresidioDetector(), GlinerDetector(kn)], "ensemble(rules+presidio+gliner-kn)"),
+            [RulesDetector(names=False), PresidioDetector(), GlinerDetector(kn)],
+            "ensemble(rules-structured+presidio+gliner-kn)"),
+        "ensemble-v1": lambda: EnsembleDetector(          # Phase 3 configuration, for comparison
+            [RulesDetector(), PresidioDetector(), GlinerDetector(kn)], "ensemble-v1(with name rules)"),
     }
 
 
-def main_bench(detectors: list[str], n: int, seed: int, show_misses: bool) -> int:
+def run_fit_once(factory, train: list[SynthDoc], test: list[SynthDoc]):
+    """Fit on `train` (dev corpus), score on `test` (frozen suite). Test is never fitted on."""
+    det = factory()
+    if hasattr(det, "fit"):
+        det.fit(train)
+    return det.name, [(d, det.detect(pages_for(d))) for d in test]
+
+
+def _main_frozen(detectors: list[str], n: int, policy: str | None, reg, suite: str) -> int:
+    import time
+    from ..policy import load_policy
+    from .frozen import frozen_corpus
+    from .holdout import holdout_corpus
+    from .metrics import score_doc, summarize
+    from .workflow import format_workflow, workflow_summary
+    # pinned suites; --n is ignored
+    train = corpus(per_template=30, seed0=0)
+    test = holdout_corpus() if suite == "holdout" else frozen_corpus()
+    pol, ws, sums = load_policy(policy or "counterparty"), [], []
+    for name in detectors:
+        t0 = time.perf_counter()
+        dname, res = run_fit_once(reg[name], train, test)
+        summary = summarize(dname, [score_doc(d, s) for d, s in res])
+        print(format_summary(summary).replace(
+            "(leave-template-out, synthetic)", f"({suite.upper()} suite; fitted on dev corpus only)"))
+        print(f"wall time: {time.perf_counter() - t0:.1f}s\n")
+        ws.append(workflow_summary(dname, res, pol))
+        sums.append(summary)
+    print("comparison (frozen suite)")
+    print(f"{'detector':38} {'PERSON P':>8} {'PERSON R':>8} {'leak docs':>9} {'prot dmg':>8}")
+    for s in sums:
+        pm = s.per_category.get("PERSON", {})
+        print(f"{s.detector:38} {pm.get('precision', float('nan')):8.2f} "
+              f"{pm.get('recall', float('nan')):8.2f} {s.doc_leak_rate:9.0%} {s.protected_damage_rate:8.1%}")
+    print()
+    print(format_workflow(ws, pol))
+    return 0
+
+
+def main_bench(detectors: list[str], n: int, seed: int, show_misses: bool,
+               suite: str = "dev", policy: str | None = None) -> int:
     import time
     reg = registry()
+    if suite in ("frozen", "holdout"):
+        return _main_frozen(detectors, n, policy, reg, suite)
     docs = corpus(per_template=n, seed0=seed, templates=TEMPLATES)
     rows = []
     for name in detectors:

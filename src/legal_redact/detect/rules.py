@@ -44,10 +44,12 @@ _DATE = (rf"(?:\d{{1,2}}\s+{_MONTH}\s+\d{{4}}|{_MONTH}\s+\d{{1,2}},?\s+\d{{4}}"
          r"|\d{1,2}[/.]\d{1,2}[/.]\d{4}|\d{4}-\d{2}-\d{2})")
 
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}")
-PHONE_INTL_RE = re.compile(r"\+\d{1,3}[ .-]?(?:\(\d{1,4}\)[ .-]?)?\d{1,4}(?:[ .-]?\d{2,4}){1,4}")
-PHONE_KW_RE = re.compile(r"(?i)\b(?:tel|phone|mobile|fax)\b\.?:?\s*(\+?[\d(][\d ().-]{6,18}\d)")
-IBAN_RE = re.compile(r"\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){2,7}(?: ?[A-Z0-9]{1,3})?\b")
-CARD_RE = re.compile(r"\b\d(?:[ -]?\d){12,18}\b")
+# Separators accept a line break as well as a space: PDF paragraphs wrap, and an
+# identifier that wraps is still the same identifier.
+PHONE_INTL_RE = re.compile(r"\+\d{1,3}[ \n.-]?(?:\(\d{1,4}\)[ \n.-]?)?\d{1,4}(?:[ \n.-]?\d{2,4}){1,4}")
+PHONE_KW_RE = re.compile(r"(?i)\b(?:tel|phone|mobile|fax)\b\.?:?\s*(\+?[\d(][\d \n().-]{6,18}\d)")
+IBAN_RE = re.compile(r"\b[A-Z]{2}\d{2}(?:[ \n]?[A-Z0-9]{4}){2,7}(?:[ \n]?[A-Z0-9]{1,3})?\b")
+CARD_RE = re.compile(r"\b\d(?:[ \n-]?\d){12,18}\b")
 DOB_RE = re.compile(rf"(?i)\b(?:date of birth|born(?: on)?|DOB)\b[:\s]+({_DATE})")
 ID_RE = re.compile(
     r"(?i)\b(?:passport|tax id|tax identification|TIN|national id|id)(?:\s+(?:no|number|#))?\.?:?\s+"
@@ -74,7 +76,16 @@ def _digits_only_neighbours_ok(text: str, s: int, e: int) -> bool:
 
 
 class RulesDetector:
-    name = "rules"
+    """`names=False` switches off the naive capitalised-pair name heuristic.
+
+    The benchmark showed that heuristic is the main source of false positives and
+    of damage to firm names, so the ensemble leaves names to the models and uses
+    the rules only for structured identifiers.
+    """
+
+    def __init__(self, names: bool = True):
+        self.names = names
+        self.name = "rules" if names else "rules-structured"
 
     def detect(self, pages: Sequence[PageText]) -> list[Suggestion]:
         out: list[Suggestion] = []
@@ -107,7 +118,7 @@ class RulesDetector:
             add(m.start(1), m.end(1), C.ID, "Identifier introduced by a passport/tax/ID keyword.", 0.8)
         for m in ADDRESS_RE.finditer(t):
             add(m.start(), m.end(), C.ADDRESS, "Street-address pattern.", 0.6)
-        for m in _NAME_RE.finditer(t):
+        for m in (_NAME_RE.finditer(t) if self.names else ()):
             s, e = m.start(1), m.end(1)
             toks = m.group(1).split()
             if any(tok in _STOP for tok in toks) or _ORG_AFTER.match(t[e:]):

@@ -13,6 +13,7 @@ from typing import Sequence
 from ..models import PageText
 from .base import Category as C
 from .base import Suggestion
+from .textview import decapitalise, flatten
 
 LABELS = {
     "person name": C.PERSON,
@@ -69,18 +70,24 @@ class GlinerDetector:
         self.threshold = threshold
 
     def _raw(self, pages: Sequence[PageText]) -> list[Suggestion]:
-        model, out = _model(self.model_name), []
+        model, best = _model(self.model_name), {}
         for p in pages:
-            for off, chunk in chunks(p.text):
-                for ent in model.predict_entities(chunk, list(LABELS), threshold=FLOOR):
-                    s, e = _trim(p.text, off + ent["start"], off + ent["end"])
-                    if e <= s:
-                        continue
-                    out.append(Suggestion(
-                        p.page, s, e, LABELS[ent["label"]],
-                        f"Model labelled this '{ent['label']}' (score {ent['score']:.2f}).",
-                        float(ent["score"]), self.name))
-        return out
+            views = [flatten(p.text)]
+            alt = decapitalise(views[0])
+            if alt:
+                views.append(alt)             # second look at ALL-CAPS names
+            for view in views:
+                for off, chunk in chunks(view):
+                    for ent in model.predict_entities(chunk, list(LABELS), threshold=FLOOR):
+                        s, e = _trim(p.text, off + ent["start"], off + ent["end"])
+                        if e <= s:
+                            continue
+                        key = (p.page, s, e, LABELS[ent["label"]])
+                        if key not in best or ent["score"] > best[key][0]:
+                            best[key] = (float(ent["score"]), ent["label"])
+        return [Suggestion(pg, s, e, cat,
+                           f"Model labelled this '{lab}' (score {sc:.2f}).", sc, self.name)
+                for (pg, s, e, cat), (sc, lab) in best.items()]
 
     def detect(self, pages: Sequence[PageText]) -> list[Suggestion]:
         return [s for s in self._raw(pages) if s.confidence >= self.threshold]

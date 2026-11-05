@@ -1,17 +1,43 @@
 """Architecture B: run several detectors and merge their suggestions.
 
-Merge rule: suggestions of the SAME category that overlap become one, covering
-the UNION of their characters. Union is the recall-safe choice (a shorter span
-from one detector cannot leave the tail of a name behind); its cost is some
-over-redaction, which the benchmark measures. The merged reason lists which
-detectors agreed, which is useful context for the reviewer.
+Two ideas, both visible in the benchmark:
+
+1. Checksums beat model scores. A card number that fails Luhn, or an IBAN that
+   fails mod-97, is demoted to a low confidence (so policy sends it to a human)
+   no matter how sure a model was; one that passes is raised to 0.99. A model that
+   calls an IBAN a "card number" is relabelled when the IBAN checksum passes.
+2. Merge by union. Suggestions of the SAME category that overlap become one
+   covering the union of their characters (recall-safe: a shorter span from one
+   detector cannot leave the tail of a name behind). The merged reason lists which
+   detectors agreed, and `support` carries that count to the policy.
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Sequence
 
 from ..models import PageText
+from .base import Category as C
 from .base import Detector, Suggestion
+from .rules import iban_ok, luhn_ok
+
+DEMOTED = 0.3
+
+
+def check_structured(s: Suggestion, text: str) -> Suggestion:
+    raw = text[s.start:s.end]
+    if s.category in (C.CARD, C.IBAN) and iban_ok(raw):
+        return replace(s, category=C.IBAN, confidence=0.99,
+                       reason="Valid IBAN (mod-97 checksum passes).")
+    if s.category == C.CARD:
+        if luhn_ok(raw):
+            return replace(s, confidence=0.99, reason="Valid card number (Luhn checksum passes).")
+        return replace(s, confidence=min(s.confidence, DEMOTED),
+                       reason=s.reason + " Fails the Luhn checksum, so it is probably not a card number.")
+    if s.category == C.IBAN:
+        return replace(s, confidence=min(s.confidence, DEMOTED),
+                       reason=s.reason + " Fails the IBAN checksum.")
+    return s
 
 
 class EnsembleDetector:
@@ -24,7 +50,9 @@ class EnsembleDetector:
                 p.fit(train_docs)
 
     def detect(self, pages: Sequence[PageText]) -> list[Suggestion]:
-        allp = [s for part in self.parts for s in part.detect(pages)]
+        text = {p.page: p.text for p in pages}
+        allp = [check_structured(s, text[s.page])
+                for part in self.parts for s in part.detect(pages)]
         allp.sort(key=lambda s: (s.page, s.category, s.start))
         merged: list[list[Suggestion]] = []
         for s in allp:
