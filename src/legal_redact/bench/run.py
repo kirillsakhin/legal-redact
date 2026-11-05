@@ -113,7 +113,7 @@ def _main_frozen(detectors: list[str], n: int, policy: str | None, reg, suite: s
         print(f"wall time: {time.perf_counter() - t0:.1f}s\n")
         ws.append(workflow_summary(dname, res, pol))
         sums.append(summary)
-    print("comparison (frozen suite)")
+    print(f"comparison ({suite} suite)")
     print(f"{'detector':38} {'PERSON P':>8} {'PERSON R':>8} {'leak docs':>9} {'prot dmg':>8}")
     for s in sums:
         pm = s.per_category.get("PERSON", {})

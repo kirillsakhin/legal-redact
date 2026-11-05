@@ -83,3 +83,42 @@ What the numbers do and do not say:
 - Caveats: one seed, 4 templates, invented names from a short list, no wrapped
   or hyphenated lines. GLiNER's training data is not known to exclude text like this.
   These are results on synthetic documents, not evidence about real client files.
+
+### Held-out results (Phase 3b)
+
+Protocol. The dev corpus is for building. Suite v2 ("frozen") was scored once, its
+failures were read, and fixes were made (wrap-tolerant patterns, line-break and
+ALL-CAPS model views, checksum checks, no naive name rule in the ensemble). Because
+of that, v2 numbers after the fixes are **contaminated** and not reported as
+evidence. Suite v3 ("holdout": new names, two new templates, new seeds, 150 docs) was
+pinned by hash before it was scored and nothing was tuned on it. Same generator
+family, so it tests whether the fixes generalise to new names and layouts, not
+real contracts.
+
+| Detector (holdout v3) | Docs with a leak (95% CI) | PERSON P / R | Protected text damaged |
+|---|---|---|---|
+| rules | 100% | 0.44 / 0.53 | 30.5% |
+| Presidio (spaCy small) | 100% | 0.80 / 0.82 | 2.9% |
+| Presidio (spaCy large) | 100% | 0.95 / 0.94 | 2.5% |
+| GLiNER knowledgator | 45% (37-53) | 0.99 / 0.98 | 3.8% |
+| GLiNER urchade | 99% | 0.98 / 0.37 | 0.6% |
+| ensemble, Phase 3 config | 13% (9-20) | 0.55 / 0.99 | 34.2% |
+| **ensemble, current** | **13% (9-20)** | **0.83 / 0.99** | **6.2%** |
+
+Read this carefully:
+
+- Presidio alone scores 100% leaky because it has no address or date-of-birth
+  recognizer; that is a coverage gap, not a quality verdict on its names. On names
+  alone, Presidio with the large model (0.95/0.94) has better precision than our
+  ensemble (0.83/0.99). The ensemble trades precision for recall by design (union),
+  which means more review work.
+- The ensemble's lead is mostly complementarity: GLiNER misses IBANs (recall 0.15),
+  rules and Presidio cover them; rules cannot read names, GLiNER can.
+- With a simulated reviewer who decides the review queue perfectly, 13% of documents
+  still leak: a reviewer cannot remove what was never suggested. With the queue
+  ignored, 67% leak. The queue (about 2 items per document) must be read.
+- Open problems: ID precision 0.69 and card precision 0.77 (extra review clicks),
+  6.2% of protected text still touched, 23 leaked spans not yet analysed (the holdout
+  stays unread until the next change set is ready).
+- Not compared: doc_redaction, commercial tools, LLM-based redaction. Not tested:
+  hyphenated line ends, multi-page and tabular layouts, non-Latin scripts, real documents.
