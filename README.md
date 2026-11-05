@@ -98,7 +98,7 @@ On synthetic documents, with a hash-pinned held-out suite (175 documents) that n
 - The export verifier caught 195 of 195 deliberately leaky exports across 13 leak routes and wrongly
   failed 0 of 15 clean ones.
 
-Against doc_redaction 2.8.1 run in batch mode on the same suite, it left 56 to 86% of documents with a readable personal string depending on configuration and categories counted, versus 1% for ours when every suggestion is accepted. That is a home-field result: the categories and formats are ours, and the gap mostly reflects layering several detectors on top of a Presidio-only baseline.
+Against doc_redaction 2.8.1 run in batch mode on the same suite, it left between 56% (extended configuration, categories it supports, email excluded) and 100% (shipped defaults, all categories) of documents with a readable personal string, versus 1% for ours when every suggestion is accepted. That is a home-field result: the categories and formats are ours, and the gap mostly reflects layering several detectors on top of a Presidio-only baseline.
 
 These numbers say how the pieces behave under a controlled protocol. They are not evidence about
 real contracts. The protocol, the failed attempts (an organisation-name veto made things worse),
