@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "legal-redact"
+version = "0.0.1"
+description = "Local, review-first PDF redaction for lawyers, with independent export checks."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "AGPL-3.0-or-later" }
+dependencies = ["pymupdf>=1.24"]
+
+[project.optional-dependencies]
+verify = ["pdfminer.six", "pypdfium2", "pikepdf"]
+dev = ["pytest", "reportlab"]
+
+[project.scripts]
+legal-redact = "legal_redact.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
