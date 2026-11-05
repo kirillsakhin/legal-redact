@@ -77,9 +77,24 @@ def registry():
         "presidio-lg": lambda: PresidioDetector(model="en_core_web_lg"),
         "gliner-kn": lambda: GlinerDetector(kn),
         "gliner-ur": lambda: GlinerDetector(ur),
-        "ensemble": lambda: EnsembleDetector(
+        # the configuration scored on holdout v3: no conflict resolution, Presidio small
+        "ensemble-v3": lambda: EnsembleDetector(
             [RulesDetector(names=False), PresidioDetector(), GlinerDetector(kn)],
-            "ensemble(rules-structured+presidio+gliner-kn)"),
+            "ensemble-v3", resolve=False),
+        # ablation steps, each adding one change to the previous
+        "ens+resolve": lambda: EnsembleDetector(
+            [RulesDetector(names=False), PresidioDetector(), GlinerDetector(kn)], "ens+resolve"),
+        "ens+resolve+lg": lambda: EnsembleDetector(
+            [RulesDetector(names=False), PresidioDetector(model="en_core_web_lg"), GlinerDetector(kn)],
+            "ens+resolve+lg"),
+        # tried and found useless on the dev suite (kept as a reported negative result)
+        "ens+resolve+lg+veto": lambda: EnsembleDetector(
+            [RulesDetector(names=False), PresidioDetector(model="en_core_web_lg"),
+             GlinerDetector(kn, veto=True)], "ens+resolve+lg+veto"),
+        # current: resolve + Presidio large + bridge for 'Surname, Firstname'
+        "ensemble": lambda: EnsembleDetector(
+            [RulesDetector(names=False), PresidioDetector(model="en_core_web_lg"),
+             GlinerDetector(kn)], "ensemble", bridge=True),
         "ensemble-v1": lambda: EnsembleDetector(          # Phase 3 configuration, for comparison
             [RulesDetector(), PresidioDetector(), GlinerDetector(kn)], "ensemble-v1(with name rules)"),
     }

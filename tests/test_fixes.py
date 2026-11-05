@@ -70,3 +70,46 @@ def test_holdout4_matches_its_pin_and_aligns():
     assert {d.template for d in docs} == set(HOLDOUT4_TEMPLATES)
     for d in docs:
         assert pages_for(d)[0].text == d.text
+
+
+def test_resolution_drops_amounts_and_contained_noise_but_never_coverage():
+    from legal_redact.detect.ensemble import drop_amounts, suppress_contained
+    t = {0: "pay GBP 381,000 to GB82WEST12345698765432 now"}
+    amount = Suggestion(0, 4, 15, "ID", "m", 0.4, "g")
+    iban = Suggestion(0, 19, 41, "IBAN", "m", 0.99, "r")
+    inner = Suggestion(0, 19, 25, "PERSON", "m", 0.85, "p")
+    assert drop_amounts([amount, iban], t) == [iban]
+    assert suppress_contained([iban, inner]) == [iban]
+    lone = Suggestion(0, 0, 10, "PERSON", "m", 0.9, "p")
+    assert suppress_contained([lone]) == [lone]
+
+
+def test_person_inside_organisation_is_demoted_not_dropped():
+    from legal_redact.detect.ensemble import veto_persons
+    p = Suggestion(0, 0, 10, "PERSON", "m", 0.9, "p")
+    org = Suggestion(0, 0, 14, "NOT_PERSON", "o", 0.8, "g")
+    out = veto_persons([p], [org])
+    assert len(out) == 1 and out[0].confidence <= 0.3 and "organisation" in out[0].reason
+
+
+def test_veto_evidence_never_leaves_the_ensemble():
+    class G:
+        name = "g"
+        def detect(self, pages):
+            return [Suggestion(0, 0, 4, "NOT_PERSON", "o", 0.9, "g"),
+                    Suggestion(0, 6, 14, "EMAIL", "e", 0.9, "g")]
+    out = EnsembleDetector([G()]).detect(page("Acme  a@b.test"))
+    assert [s.category for s in out] == ["EMAIL"]
+
+
+def test_bridge_joins_surname_comma_firstname_only_when_enabled():
+    class P:
+        name = "p"
+        def detect(self, pages):
+            return [Suggestion(0, 0, 3, "PERSON", "m", 0.9, "p"), Suggestion(0, 5, 10, "PERSON", "m", 0.9, "p")]
+    pg = page("Kim, Aoife")
+    assert len(EnsembleDetector([P()]).detect(pg)) == 2
+    out = EnsembleDetector([P()], bridge=True).detect(pg)
+    assert [(s.start, s.end) for s in out] == [(0, 10)]
+    far = page("Kim and Aoife")
+    assert len(EnsembleDetector([P()], bridge=True).detect(far)) == 2

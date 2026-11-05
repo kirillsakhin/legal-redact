@@ -21,6 +21,7 @@ class Category:
     IBAN = "IBAN"        # bank account numbers
     CARD = "CARD"        # payment card numbers
     DOB = "DOB"          # date of birth
+    NOT_PERSON = "NOT_PERSON"   # internal veto evidence (organisation / place); never exported
     ALL = (PERSON, EMAIL, PHONE, ADDRESS, ID, IBAN, CARD, DOB)
 
 

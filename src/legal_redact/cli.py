@@ -82,7 +82,8 @@ def main(argv: list[str] | None = None) -> int:
     bn = sub.add_parser("bench", help="run the synthetic benchmark")
     bn.add_argument("--detector", nargs="+", default=["rules"],
                     choices=["rules", "presidio", "presidio-lg", "gliner-kn", "gliner-ur",
-                             "ensemble", "ensemble-v1"])
+                             "ensemble", "ensemble-v1", "ensemble-v3", "ens+resolve",
+                             "ens+resolve+lg", "ens+resolve+lg+veto"])
     bn.add_argument("--suite", choices=["dev", "frozen", "holdout", "holdout4"], default="dev")
     bn.add_argument("--policy", default=None)
     bn.add_argument("--n", type=int, default=30, help="documents per template")

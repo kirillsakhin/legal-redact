@@ -26,7 +26,8 @@ LABELS = {
     "credit card number": C.CARD,
     "date of birth": C.DOB,
 }
-FLOOR = 0.2          # raw spans below this are never kept
+VETO_LABELS = {"company name": C.NOT_PERSON, "location name": C.NOT_PERSON}
+FLOOR = 0.2         # raw spans below this are never kept
 CHUNK_CHARS = 1200   # lines are grouped up to this size
 _MODELS: dict = {}   # one load per process, not per fold
 
@@ -64,10 +65,15 @@ def _trim(text: str, s: int, e: int) -> tuple[int, int]:
 
 
 class GlinerDetector:
-    def __init__(self, model: str = "knowledgator/gliner-pii-base-v1.0", threshold: float = 0.5):
+    def __init__(self, model: str = "knowledgator/gliner-pii-base-v1.0", threshold: float = 0.5,
+                 veto: bool = False):
+        """veto=True also emits NOT_PERSON evidence (organisation / place names) for the
+        ensemble to use; it is internal and never reaches policy or review."""
         self.model_name = model
         self.name = "gliner:" + model.split("/")[-1]
         self.threshold = threshold
+        self.veto = veto
+        self.labels = {**LABELS, **(VETO_LABELS if veto else {})}
 
     def _raw(self, pages: Sequence[PageText]) -> list[Suggestion]:
         model, best = _model(self.model_name), {}
@@ -78,11 +84,11 @@ class GlinerDetector:
                 views.append(alt)             # second look at ALL-CAPS names
             for view in views:
                 for off, chunk in chunks(view):
-                    for ent in model.predict_entities(chunk, list(LABELS), threshold=FLOOR):
+                    for ent in model.predict_entities(chunk, list(self.labels), threshold=FLOOR):
                         s, e = _trim(p.text, off + ent["start"], off + ent["end"])
                         if e <= s:
                             continue
-                        key = (p.page, s, e, LABELS[ent["label"]])
+                        key = (p.page, s, e, self.labels[ent["label"]])
                         if key not in best or ent["score"] > best[key][0]:
                             best[key] = (float(ent["score"]), ent["label"])
         return [Suggestion(pg, s, e, cat,
@@ -100,7 +106,8 @@ class GlinerDetector:
         """
         from ..bench.metrics import score_doc
         from ..bench.run import pages_for
-        cached = [(d, self._raw(pages_for(d))) for d in train_docs]
+        cached = [(d, [s for s in self._raw(pages_for(d)) if s.category != C.NOT_PERSON])
+                  for d in train_docs]
         best, best_t = -1.0, self.threshold
         for t in (0.3, 0.4, 0.5, 0.6, 0.7, 0.8):
             tp_p = n_p = tp_r = n_g = 0
