@@ -102,3 +102,13 @@ def test_decisions_roundtrip_recomputes_findings(src, tmp_path):
     save_decisions(s, dec)
     s2 = load_decisions(path, dec)
     assert len(s2.decisions) == len(s.decisions) and s2.decisions[0].rects
+
+
+def test_ensemble_without_ml_extra_gives_a_clear_message_not_a_traceback(monkeypatch, capsys):
+    import sys
+    from legal_redact import cli
+    monkeypatch.setitem(sys.modules, "gliner", None)      # makes `import gliner` raise ImportError
+    assert cli._detector("ensemble") is None
+    out = capsys.readouterr().out
+    assert "ml" in out and "--detector rules" in out
+    assert cli._detector("rules") is not None

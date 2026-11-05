@@ -34,15 +34,33 @@ def _inspect(path: str) -> int:
     return 0
 
 
+def _detector(name: str):
+    """The rules detector needs nothing extra; the ensemble needs the 'ml' extra and models."""
+    if name == "rules":
+        from .detect.rules import RulesDetector
+        return RulesDetector(names=False)
+    hint = ("  pip install -e \".[ml]\" && python -m spacy download en_core_web_lg\n"
+            "or run with --detector rules (structured identifiers only; no names or addresses).")
+    try:                      # the detectors import their libraries lazily: check up front
+        import gliner  # noqa: F401
+        import presidio_analyzer  # noqa: F401
+        import spacy
+        from .bench.run import registry
+    except ImportError as exc:
+        print(f"The ensemble needs the 'ml' extra ({exc.name} is missing). Install it with\n{hint}")
+        return None
+    if not spacy.util.is_package("en_core_web_lg"):
+        print(f"The ensemble needs the spaCy model en_core_web_lg. Install it with\n{hint}")
+        return None
+    return registry()["ensemble"]()
+
+
 def _suggest(args) -> int:
     from .pipeline import save_decisions, suggest
     from .policy import load_policy
-    if args.detector == "rules":
-        from .detect.rules import RulesDetector
-        det = RulesDetector(names=False)
-    else:
-        from .bench.run import registry
-        det = registry()["ensemble"]()
+    det = _detector(args.detector)
+    if det is None:
+        return 2
     s = suggest(args.pdf, det, load_policy(args.policy))
     save_decisions(s, args.out)
     r = s.report()
@@ -63,12 +81,9 @@ def _review(args) -> int:
         print(f"Resuming decisions from {dec}")
         session = load_decisions(args.pdf, dec)
     else:
-        if args.detector == "rules":
-            from .detect.rules import RulesDetector
-            det = RulesDetector(names=False)
-        else:
-            from .bench.run import registry
-            det = registry()["ensemble"]()
+        det = _detector(args.detector)
+        if det is None:
+            return 2
         print("Detecting (local models; the first run loads them)...")
         session = suggest(args.pdf, det, load_policy(args.policy))
         save_decisions(session, dec)

@@ -5,3 +5,6 @@ __pycache__/
 # never commit real documents or outputs
 /private/
 *.redacted.pdf
+*.decisions.json
+build/
+dist/
