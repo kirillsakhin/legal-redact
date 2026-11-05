@@ -200,3 +200,25 @@ which is the likely source of the remaining 4.5% protected-text damage (not yet 
 ID span boundaries differ from gold (strict recall 0.79); with the review queue ignored
 51% of documents would leak, so the queue (about one item per document) must be read.
 v4 is now read: the next change set needs a v5.
+
+## Review page (Phase 5)
+
+```
+legal-redact review contract.pdf            # detects, then opens a local page
+legal-redact review contract.pdf --no-browser --port 8765
+```
+
+The page shows each suggestion over the rendered document with its category, confidence,
+detector and reason. Accept, reject, or draw your own box. Keys: `j`/`k` next/previous
+undecided item, `a` accept, `r` reject, `d` draw. Pre-flight findings that need your
+acknowledgement are listed with checkboxes; files that must be refused say so. Export
+stays disabled until nothing is undecided and every finding is acknowledged, and the
+verification report is shown on the page, including what it does not cover.
+
+Security: it serves a confidential document, so it binds to 127.0.0.1 only, makes no
+external requests (no CDN, no telemetry), requires a random token per run (printed in
+the terminal link), checks the Host header against DNS rebinding, sends a strict
+content-security policy, and its API never returns document text. Decisions autosave to
+`<pdf>.decisions.json` (no document text) and the same file resumes a session.
+Anyone with access to your user session can still read the file on disk; this is a local
+tool, not a multi-user service.

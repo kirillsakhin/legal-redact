@@ -26,4 +26,4 @@ where = ["src"]
 testpaths = ["tests"]
 
 [tool.setuptools.package-data]
-legal_redact = ["policies/*.toml"]
+legal_redact = ["policies/*.toml", "web/*.html", "bench/*SHA256"]

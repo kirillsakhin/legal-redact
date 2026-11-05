@@ -53,6 +53,29 @@ def _suggest(args) -> int:
     return 0
 
 
+def _review(args) -> int:
+    from pathlib import Path
+    from .pipeline import load_decisions, save_decisions, suggest
+    from .policy import load_policy
+    from .review_server import serve
+    dec = args.decisions or str(Path(args.pdf).with_name(Path(args.pdf).name + ".decisions.json"))
+    if Path(dec).exists():
+        print(f"Resuming decisions from {dec}")
+        session = load_decisions(args.pdf, dec)
+    else:
+        if args.detector == "rules":
+            from .detect.rules import RulesDetector
+            det = RulesDetector(names=False)
+        else:
+            from .bench.run import registry
+            det = registry()["ensemble"]()
+        print("Detecting (local models; the first run loads them)...")
+        session = suggest(args.pdf, det, load_policy(args.policy))
+        save_decisions(session, dec)
+    serve(args.pdf, session, dec, args.port, open_browser=not args.no_browser)
+    return 0
+
+
 def _redact(args) -> int:
     from .pipeline import ExportRefused, export, load_decisions
     s = load_decisions(args.pdf, args.decisions)
@@ -101,6 +124,14 @@ def main(argv: list[str] | None = None) -> int:
     rd.add_argument("--ack", default="", help="comma-separated pre-flight REVIEW codes you acknowledge")
     rd.add_argument("--accept-proposed", action="store_true",
                     help="bulk-accept pending items the policy proposes to redact (review items stay pending)")
+    rv = sub.add_parser("review", help="open the local review page (accept / reject / add boxes, export)")
+    rv.add_argument("pdf")
+    rv.add_argument("--policy", default="counterparty")
+    rv.add_argument("--detector", default="ensemble", choices=["ensemble", "rules"])
+    rv.add_argument("--decisions", default=None,
+                    help="decisions file to resume or create (default: <pdf>.decisions.json)")
+    rv.add_argument("--port", type=int, default=0)
+    rv.add_argument("--no-browser", action="store_true")
     be = sub.add_parser("bench-export", help="run the seeded-leak suite against the export verifier")
     be.add_argument("--n", type=int, default=10, help="documents per template")
     args = ap.parse_args(argv)
@@ -108,6 +139,8 @@ def main(argv: list[str] | None = None) -> int:
         return _suggest(args)
     if args.cmd == "redact":
         return _redact(args)
+    if args.cmd == "review":
+        return _review(args)
     if args.cmd == "bench-export":
         from .bench import export_suite
         res = export_suite.run(args.n)

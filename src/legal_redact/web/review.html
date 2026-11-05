@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>legal-redact review</title>
+<style>
+:root{
+  --bg:#f6f6f4; --panel:#ffffff; --ink:#1b1d1f; --muted:#5f6670; --line:#d9dbde;
+  --accent:#1f5fbf; --accent-ink:#ffffff; --pend:#b86e00; --pend-bg:rgba(255,176,32,.22);
+  --ok:#1d7a46; --bad:#b3261e; --warn:#8a5a00; --box:rgba(0,0,0,.5);
+  --radius:8px; --pad:12px;
+}
+@media (prefers-color-scheme:dark){
+  :root{--bg:#141517; --panel:#1d1f22; --ink:#e8e9ea; --muted:#9aa1aa; --line:#33363b;
+    --accent:#6fa3ef; --accent-ink:#0d1117; --pend:#f0a93a; --pend-bg:rgba(240,169,58,.25);
+    --ok:#52c283; --bad:#ff7b72; --warn:#e0a84a; --box:rgba(255,255,255,.28)}
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+header{display:flex;gap:16px;align-items:center;justify-content:space-between;padding:10px 16px;
+  background:var(--panel);border-bottom:1px solid var(--line)}
+header h1{font-size:15px;margin:0;font-weight:600}
+header .counts{color:var(--muted)}
+main{display:grid;grid-template-columns:minmax(0,1fr) 380px;height:calc(100vh - 49px)}
+@media (max-width:900px){main{grid-template-columns:1fr;height:auto}}
+#viewer{overflow:auto;padding:var(--pad)}
+.toolbar{display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap}
+button{font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);
+  border-radius:6px;padding:5px 10px;cursor:pointer}
+button:hover{border-color:var(--accent)}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+button:disabled{opacity:.5;cursor:not-allowed}
+button.on{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+#stage{position:relative;display:inline-block;max-width:100%;box-shadow:0 1px 6px rgba(0,0,0,.2)}
+#stage img{display:block;max-width:100%;height:auto;user-select:none;-webkit-user-drag:none}
+#overlay{position:absolute;inset:0}
+#overlay.draw{cursor:crosshair}
+.box{position:absolute;border:2px solid var(--pend);background:var(--pend-bg);cursor:pointer}
+.box.accepted{border-color:var(--ok);background:var(--box)}
+.box.rejected{border:1px dashed var(--muted);background:transparent}
+.box.sel{outline:3px solid var(--accent);outline-offset:1px;z-index:2}
+.box.preview{border:2px dashed var(--accent);background:transparent;pointer-events:none}
+aside{overflow:auto;border-left:1px solid var(--line);background:var(--panel)}
+section{padding:var(--pad) 14px;border-bottom:1px solid var(--line)}
+section h2{font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);margin:0 0 8px}
+ul{list-style:none;margin:0;padding:0}
+.item{border:1px solid var(--line);border-radius:var(--radius);padding:8px 10px;margin-bottom:8px;cursor:pointer}
+.item.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.item .top{display:flex;gap:8px;align-items:center;justify-content:space-between}
+.chip{display:inline-block;font-size:11px;padding:1px 7px;border-radius:99px;border:1px solid var(--line);color:var(--muted)}
+.chip.pending{color:var(--pend);border-color:var(--pend)}
+.chip.accepted,.chip.PASS{color:var(--ok);border-color:var(--ok)}
+.chip.rejected{color:var(--muted)}
+.chip.FAIL,.chip.refuse{color:var(--bad);border-color:var(--bad)}
+.chip.WARN,.chip.review{color:var(--warn);border-color:var(--warn)}
+.reason{color:var(--muted);font-size:12.5px;margin:4px 0 6px}
+.row{display:flex;gap:6px;flex-wrap:wrap}
+.blockers li{color:var(--bad);margin-bottom:4px}
+.ready{color:var(--ok);font-weight:600}
+input[type=text]{width:100%;font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:6px;
+  background:var(--bg);color:var(--ink)}
+.checks li{display:flex;gap:8px;margin-bottom:6px;align-items:flex-start}
+.checks .chip{flex:none;min-width:64px;text-align:center;border-radius:6px;white-space:nowrap}
+.checks li span:last-child,.ready,.blockers li{overflow-wrap:anywhere}
+aside{overflow-x:hidden}
+.limits{color:var(--muted);font-size:12.5px;margin:8px 0 0;padding-left:18px;list-style:disc}
+.note{color:var(--muted);font-size:12.5px}
+.sr{position:absolute;left:-9999px}
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">legal-redact review</h1>
+  <div class="counts" id="counts" aria-live="polite"></div>
+</header>
+<main>
+  <div id="viewer">
+    <div class="toolbar">
+      <button id="prev" aria-label="Previous page">&larr;</button>
+      <span id="pageno"></span>
+      <button id="next" aria-label="Next page">&rarr;</button>
+      <button id="draw" title="Drag on the page to add a redaction box (key: d)">Add box</button>
+      <span class="note">Keys: j/k next/previous item &middot; a accept &middot; r reject &middot; d draw</span>
+    </div>
+    <div id="stage"><img id="pg" alt="Document page"><div id="overlay"></div></div>
+  </div>
+  <aside>
+    <section>
+      <h2>Before export</h2>
+      <div id="gate"></div>
+    </section>
+    <section>
+      <h2>Pre-flight findings</h2>
+      <ul id="findings"></ul>
+    </section>
+    <section>
+      <h2>Suggestions</h2>
+      <div class="toolbar">
+        <select id="filter" aria-label="Filter suggestions">
+          <option value="todo">Needs a decision</option>
+          <option value="all">All</option>
+        </select>
+        <button id="bulk" title="Accept every undecided item the policy proposes to redact">Accept proposed redactions</button>
+      </div>
+      <ul id="list"></ul>
+    </section>
+    <section>
+      <h2>Export</h2>
+      <label for="out" class="note">Write redacted copy to</label>
+      <input type="text" id="out">
+      <div class="row" style="margin-top:8px"><button class="primary" id="export">Export and verify</button></div>
+      <div id="result" style="margin-top:10px"></div>
+    </section>
+  </aside>
+</main>
+<script>
+"use strict";
+const T = new URLSearchParams(location.search).get("t") || "";
+let S = null, cur = 0, sel = null, drawMode = false;
+const $ = id => document.getElementById(id);
+
+async function api(path, body) {
+  const opt = body === undefined ? {headers: {"X-Review-Token": T}}
+    : {method: "POST", headers: {"X-Review-Token": T, "Content-Type": "application/json"}, body: JSON.stringify(body)};
+  const r = await fetch(path, opt);
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+function el(tag, props = {}, ...kids) {
+  const e = Object.assign(document.createElement(tag), props);
+  for (const k of kids) e.append(k);
+  return e;
+}
+function setState(s) { S = s; render(); }
+
+function render() {
+  $("title").textContent = S.name + " — review";
+  const n = st => S.decisions.filter(d => d.status === st).length;
+  $("counts").textContent = `${n("pending")} need a decision · ${n("accepted")} accepted · ${n("rejected")} rejected`;
+  $("pageno").textContent = `Page ${cur + 1} of ${S.pages.length}`;
+  $("prev").disabled = cur === 0; $("next").disabled = cur >= S.pages.length - 1;
+  renderPage(); renderGate(); renderFindings(); renderList();
+  if (!$("out").value) $("out").value = S.out_default;
+}
+
+function renderPage() {
+  const img = $("pg"), want = `/page/${cur}.png?t=${encodeURIComponent(T)}&dpi=110`;
+  if (!img.src.endsWith(want)) { img.onload = drawBoxes; img.src = want; } else drawBoxes();
+}
+function scale() { return $("pg").clientWidth / S.pages[cur].w; }
+function drawBoxes() {
+  const ov = $("overlay"); ov.replaceChildren();
+  const k = scale();
+  S.decisions.forEach(d => {
+    if (d.page !== cur) return;
+    d.rects.forEach(r => {
+      const b = el("div", {className: `box ${d.status}${d.i === sel ? " sel" : ""}`});
+      b.style.cssText = `left:${r[0] * k}px;top:${r[1] * k}px;width:${(r[2] - r[0]) * k}px;height:${(r[3] - r[1]) * k}px`;
+      b.title = `${d.category} — ${d.status}`;
+      b.onclick = e => { e.stopPropagation(); select(d.i, false); };
+      ov.append(b);
+    });
+  });
+}
+
+function renderGate() {
+  const g = $("gate"); g.replaceChildren();
+  if (S.can_export) { g.append(el("div", {className: "ready", textContent: "Ready to export."})); return; }
+  const ul = el("ul", {className: "blockers"});
+  S.blockers.forEach(b => ul.append(el("li", {textContent: b})));
+  g.append(ul);
+}
+
+function renderFindings() {
+  const ul = $("findings"); ul.replaceChildren();
+  if (!S.findings.length) { ul.append(el("li", {className: "note", textContent: "None."})); return; }
+  S.findings.forEach(f => {
+    const li = el("li", {style: "margin-bottom:8px"});
+    const head = el("div", {className: "row"}, el("span", {className: `chip ${f.severity}`, textContent: f.severity}),
+      el("strong", {textContent: f.code}), el("span", {className: "note", textContent: f.page != null ? `page ${f.page + 1}` : ""}));
+    li.append(head, el("div", {className: "reason", textContent: f.message}));
+    if (f.severity === "review") {
+      const cb = el("input", {type: "checkbox", id: "ack-" + f.code, checked: f.ack});
+      cb.onchange = () => act("/api/ack", {code: f.code, on: cb.checked});
+      li.append(el("label", {htmlFor: cb.id}, cb, " I have looked at this"));
+    }
+    if (f.severity === "refuse") li.append(el("div", {className: "note", textContent: "Export is refused for this file."}));
+    ul.append(li);
+  });
+}
+
+function renderList() {
+  const ul = $("list"); ul.replaceChildren();
+  let items = S.decisions.slice();
+  if ($("filter").value === "todo") items = items.filter(d => d.status === "pending");
+  const order = {pending: 0, accepted: 1, rejected: 2};
+  items.sort((a, b) => order[a.status] - order[b.status] || a.page - b.page || a.i - b.i);
+  if (!items.length) ul.append(el("li", {className: "note", textContent: "Nothing here."}));
+  items.forEach(d => {
+    const li = el("li", {className: "item" + (d.i === sel ? " sel" : "")});
+    li.onclick = () => select(d.i, true);
+    li.append(
+      el("div", {className: "top"},
+        el("span", {}, el("strong", {textContent: d.category}), el("span", {className: "note", textContent: ` · p${d.page + 1} · ${Math.round(d.confidence * 100)}%`})),
+        el("span", {className: `chip ${d.status}`, textContent: d.status})),
+      el("div", {className: "reason", textContent: d.reason}),
+      el("div", {className: "row"},
+        el("span", {className: "chip", textContent: `policy: ${d.proposed}`})));
+    const row = el("div", {className: "row", style: "margin-top:6px"});
+    const mk = (label, status) => { const b = el("button", {textContent: label}); b.onclick = e => { e.stopPropagation(); act("/api/decide", {i: d.i, status: status}); }; return b; };
+    if (d.status !== "accepted") row.append(mk("Accept", "accepted"));
+    if (d.status !== "rejected") row.append(mk("Reject", "rejected"));
+    if (d.status !== "pending") row.append(mk("Undecided", "pending"));
+    if (d.source === "manual" && d.status !== "rejected") {
+      const rm = el("button", {textContent: "Remove"}); rm.onclick = e => { e.stopPropagation(); act("/api/remove", {i: d.i}); }; row.append(rm);
+    }
+    li.append(row);
+    ul.append(li);
+  });
+}
+
+function select(i, jump) {
+  sel = i;
+  const d = S.decisions.find(x => x.i === i);
+  if (d && d.page !== cur) { cur = d.page; render(); } else { drawBoxes(); renderList(); }
+  if (jump && d && d.rects.length) {
+    const box = [...$("overlay").children].find(c => c.classList.contains("sel"));
+    if (box) box.scrollIntoView({block: "center", behavior: "smooth"});
+  }
+}
+
+async function act(path, body) {
+  try { setState((await api(path, body)).state); } catch (e) { alert(e.message); }
+}
+
+function visibleTodo() {
+  return S.decisions.filter(d => d.status === "pending").sort((a, b) => a.page - b.page || a.i - b.i);
+}
+document.addEventListener("keydown", e => {
+  if (!S || e.target.matches("input,select,textarea") || e.ctrlKey || e.metaKey || e.altKey) return;
+  const todo = visibleTodo();
+  if (e.key === "j" || e.key === "k") {
+    const idx = todo.findIndex(d => d.i === sel);
+    const next = todo[Math.max(0, Math.min(todo.length - 1, idx + (e.key === "j" ? 1 : -1)))];
+    if (next) select(next.i, true);
+  } else if (e.key === "a" || e.key === "r") {
+    const status = e.key === "a" ? "accepted" : "rejected";
+    chain = chain.then(() => decideSelected(status));      // keystrokes apply strictly in order
+  } else if (e.key === "d") toggleDraw();
+});
+
+let chain = Promise.resolve();
+async function decideSelected(status) {
+  if (sel === null) return;
+  const todo = visibleTodo(), at = todo.findIndex(d => d.i === sel);
+  const nextId = (todo[at + 1] || todo[at - 1] || {}).i;
+  try {
+    const r = await api("/api/decide", {i: sel, status});
+    setState(r.state);
+    if (nextId !== undefined && nextId !== sel) select(nextId, true);
+  } catch (err) { alert(err.message); }
+}
+
+function toggleDraw() { drawMode = !drawMode; $("draw").classList.toggle("on", drawMode); $("overlay").classList.toggle("draw", drawMode); }
+$("draw").onclick = toggleDraw;
+$("prev").onclick = () => { cur = Math.max(0, cur - 1); render(); };
+$("next").onclick = () => { cur = Math.min(S.pages.length - 1, cur + 1); render(); };
+$("filter").onchange = renderList;
+window.addEventListener("resize", () => S && drawBoxes());
+
+(function drawing() {
+  const ov = $("overlay"); let start = null, prev = null;
+  const pt = e => { const r = ov.getBoundingClientRect(), k = scale(); return [(e.clientX - r.left) / k, (e.clientY - r.top) / k]; };
+  ov.addEventListener("mousedown", e => {
+    if (!drawMode) return; start = pt(e); prev = el("div", {className: "box preview"}); ov.append(prev); e.preventDefault();
+  });
+  window.addEventListener("mousemove", e => {
+    if (!start) return; const p = pt(e), k = scale();
+    const x0 = Math.min(start[0], p[0]), y0 = Math.min(start[1], p[1]);
+    prev.style.cssText = `left:${x0 * k}px;top:${y0 * k}px;width:${Math.abs(p[0] - start[0]) * k}px;height:${Math.abs(p[1] - start[1]) * k}px`;
+  });
+  window.addEventListener("mouseup", async e => {
+    if (!start) return; const p = pt(e), s = start; start = null; prev.remove();
+    if (Math.abs(p[0] - s[0]) < 3 || Math.abs(p[1] - s[1]) < 3) return;
+    await act("/api/add", {page: cur, rect: [s[0], s[1], p[0], p[1]]});
+  });
+})();
+
+$("bulk").onclick = async () => {
+  const n = S.decisions.filter(d => d.status === "pending" && d.proposed === "redact").length;
+  if (!n) { alert("No undecided items are proposed for redaction."); return; }
+  if (confirm(`Accept ${n} undecided item(s) that the policy proposes to redact? Items marked 'review' stay undecided.`))
+    try { setState((await api("/api/bulk", {})).state); } catch (e) { alert(e.message); }
+};
+
+$("export").onclick = async () => {
+  const btn = $("export"), res = $("result"); btn.disabled = true; res.replaceChildren(el("div", {className: "note", textContent: "Writing and verifying…"}));
+  try {
+    const r = await api("/api/export", {out: $("out").value}); S = r.state; render();
+    res.replaceChildren();
+    res.append(el("div", {className: r.ok ? "ready" : "blockers", textContent: r.ok ? `Written: ${r.out}` : `Not exported: ${r.message}`}));
+    if (!r.ok && r.blockers && r.blockers.length) { const ul = el("ul", {className: "blockers"}); r.blockers.forEach(b => ul.append(el("li", {textContent: b}))); res.append(ul); }
+    if (r.report) {
+      const ul = el("ul", {className: "checks"});
+      r.report.checks.forEach(c => ul.append(el("li", {}, el("span", {className: `chip ${c.status}`, textContent: c.status}), el("span", {textContent: `${c.id} ${c.name}: ${c.detail}`}))));
+      res.append(ul, el("div", {className: "note", textContent: r.report.passed ? "No leak found in the supported checks. This does not prove the document is safe. Not covered:" : "A leak was detected. The file was withheld. Not covered by the checks:"}));
+      const lim = el("ul", {className: "limits"}); r.report.limits.forEach(l => lim.append(el("li", {textContent: l}))); res.append(lim);
+    }
+  } catch (e) { res.replaceChildren(el("div", {className: "blockers", textContent: e.message})); }
+  btn.disabled = false;
+};
+
+api("/api/state").then(setState).catch(e => { document.body.textContent = "Cannot load: " + e.message + " (open the link printed in the terminal)"; });
+</script>
+</body>
+</html>

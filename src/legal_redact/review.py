@@ -44,8 +44,19 @@ class ReviewSession:
                                        "redact", "accepted", "manual"))
         return len(self.decisions) - 1
 
-    def acknowledge(self, code: str) -> None:
-        self.acknowledged.add(code)
+    def add_manual_rect(self, page: int, rect: tuple, note: str = "added by reviewer") -> int:
+        """A box the reviewer drew on the page; it has no text offsets."""
+        self.decisions.append(Decision(page, 0, 0, MANUAL, note, "reviewer", 1.0, "redact",
+                                       "accepted", "manual", (tuple(float(v) for v in rect),)))
+        return len(self.decisions) - 1
+
+    def remove_manual(self, i: int) -> None:
+        if self.decisions[i].source != "manual":
+            raise ValueError("only boxes added by the reviewer can be removed; reject detector suggestions instead")
+        self.decisions[i].status = "rejected"
+
+    def acknowledge(self, code: str, on: bool = True) -> None:
+        (self.acknowledged.add if on else self.acknowledged.discard)(code)
 
     # --- gate --------------------------------------------------------------
     def pending(self) -> list[int]:
