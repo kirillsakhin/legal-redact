@@ -97,12 +97,12 @@ def _main_frozen(detectors: list[str], n: int, policy: str | None, reg, suite: s
     import time
     from ..policy import load_policy
     from .frozen import frozen_corpus
-    from .holdout import holdout_corpus
+    from .holdout import holdout4_corpus, holdout_corpus
     from .metrics import score_doc, summarize
     from .workflow import format_workflow, workflow_summary
     # pinned suites; --n is ignored
     train = corpus(per_template=30, seed0=0)
-    test = holdout_corpus() if suite == "holdout" else frozen_corpus()
+    test = {"holdout": holdout_corpus, "holdout4": holdout4_corpus}.get(suite, frozen_corpus)()
     pol, ws, sums = load_policy(policy or "counterparty"), [], []
     for name in detectors:
         t0 = time.perf_counter()
@@ -128,7 +128,7 @@ def main_bench(detectors: list[str], n: int, seed: int, show_misses: bool,
                suite: str = "dev", policy: str | None = None) -> int:
     import time
     reg = registry()
-    if suite in ("frozen", "holdout"):
+    if suite in ("frozen", "holdout", "holdout4"):
         return _main_frozen(detectors, n, policy, reg, suite)
     docs = corpus(per_template=n, seed0=seed, templates=TEMPLATES)
     rows = []

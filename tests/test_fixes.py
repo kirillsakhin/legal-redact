@@ -61,3 +61,12 @@ def test_holdout_matches_its_pin_and_aligns():
     assert {d.template for d in docs} == set(HOLDOUT_TEMPLATES)
     for d in docs:
         assert pages_for(d)[0].text == d.text
+
+
+def test_holdout4_matches_its_pin_and_aligns():
+    from legal_redact.bench.holdout import HOLDOUT4_TEMPLATES, PIN_FILE_4, fingerprint4, holdout4_corpus
+    assert fingerprint4() == PIN_FILE_4.read_text().strip()
+    docs = holdout4_corpus(per_template=2)
+    assert {d.template for d in docs} == set(HOLDOUT4_TEMPLATES)
+    for d in docs:
+        assert pages_for(d)[0].text == d.text

@@ -101,3 +101,68 @@ def fingerprint(per_template: int = PER_TEMPLATE, seed0: int = SEED0) -> str:
                 h.update(json.dumps([t, seed0 + i, frozen._gen(t, seed0 + i)],
                                     ensure_ascii=False).encode())
     return h.hexdigest()
+
+
+# ---- v4: created before the v3-informed ensemble changes were scored ---------------------
+# v3 has now been scored on the ensemble, and its aggregate results informed the next change
+# set (e.g. trying Presidio's large model). So v3 can no longer judge that change set; v4 can.
+# Same rules: new names (disjoint pools), new seeds, one new template; scored once per change
+# set; nothing tuned on it.
+HOLDOUT4_TEMPLATES = HOLDOUT_TEMPLATES + ("guarantee",)
+PIN_FILE_4 = Path(__file__).with_name("HOLDOUT4_SHA256")
+SEED0_4 = 9000
+
+FIRST4 = ["Anselm", "Bianca", "Cormac", "Dagny", "Elio", "Freya", "Gaspar", "Hana", "Idris",
+          "Joaquim", "Kalinda", "Lorenzo", "Maren", "Niall", "Ottilie", "Pilar", "Quinn",
+          "Rafael", "Saoirse", "Teodor", "Una", "Valentin", "Wilhelmina", "Xiomara", "Yannick",
+          "Zeynep", "Ágnes", "Hélène", "Mårten", "Siobhán", "Tiago", "Ørjan"]
+LAST4 = ["Abernathy", "Bergström", "Castellani", "Dragomir", "Eklund", "Fitzgerald", "Galvão",
+         "Hartmann", "Ionescu", "Jensen", "Kowal", "Lombardi", "Magnusson", "Novotny",
+         "Oliveira", "Papadakis", "Quintana", "Rinaldi", "Sorensen", "Teixeira", "Urban",
+         "Vasquez", "Wojcik", "Yadav", "Zimmermann", "McAllister", "de Souza", "von Trapp",
+         "Al-Rashid", "Ó Briain"]
+
+
+def t_guarantee(r):
+    g, d = person(r), person(r)
+    kw, idv = national_id(r)
+    pv, pkw = phone(r)
+    return [
+        ["DEED OF GUARANTEE"],
+        ["The Guarantor, ", title_prefix(r), E(PERSON, g), ", ", kw, E(ID, idv), ", of ",
+         E(ADDRESS, address(r)), ", guarantees the debts of ", E(PERSON, d), " to ",
+         P("party", company(r)), "."],
+        ["The guaranteed amount is ", P("amount", amount(r)), ". Payments are made from ",
+         E(IBAN, iban(r)), "; the Guarantor may be reached at ", E(EMAIL, email(r, g)),
+         " or ", pkw, E(PHONE, pv), "."],
+        ["Signed on ", P("date", date(r)), " near ", r.choice(frozen.PLACE_LOOKALIKES), " by ",
+         E(PERSON, g.upper() if r.random() < 0.5 else g), ". ", P("law", law(r)), " applies."],
+    ]
+
+
+frozen._BUILD.setdefault("guarantee", t_guarantee)
+
+
+@contextmanager
+def _pools4():
+    old = frozen.FIRST, frozen.LAST
+    frozen.FIRST, frozen.LAST = FIRST4, LAST4
+    try:
+        yield
+    finally:
+        frozen.FIRST, frozen.LAST = old
+
+
+def holdout4_corpus(per_template: int = PER_TEMPLATE, seed0: int = SEED0_4) -> list[SynthDoc]:
+    with _pools4():
+        return [frozen.generate(t, seed0 + i) for t in HOLDOUT4_TEMPLATES for i in range(per_template)]
+
+
+def fingerprint4(per_template: int = PER_TEMPLATE, seed0: int = SEED0_4) -> str:
+    h = hashlib.sha256()
+    with _pools4():
+        for t in HOLDOUT4_TEMPLATES:
+            for i in range(per_template):
+                h.update(json.dumps([t, seed0 + i, frozen._gen(t, seed0 + i)],
+                                    ensure_ascii=False).encode())
+    return h.hexdigest()

@@ -83,7 +83,7 @@ def main(argv: list[str] | None = None) -> int:
     bn.add_argument("--detector", nargs="+", default=["rules"],
                     choices=["rules", "presidio", "presidio-lg", "gliner-kn", "gliner-ur",
                              "ensemble", "ensemble-v1"])
-    bn.add_argument("--suite", choices=["dev", "frozen", "holdout"], default="dev")
+    bn.add_argument("--suite", choices=["dev", "frozen", "holdout", "holdout4"], default="dev")
     bn.add_argument("--policy", default=None)
     bn.add_argument("--n", type=int, default=30, help="documents per template")
     bn.add_argument("--seed", type=int, default=0)
