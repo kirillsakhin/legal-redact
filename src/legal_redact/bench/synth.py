@@ -60,6 +60,7 @@ class SynthDoc:
     text: str
     gold: list[Gold] = field(default_factory=list)
     protected: list[Protected] = field(default_factory=list)
+    pdf: bytes | None = None   # set for suites that render their own (wrapped) PDF
 
     @property
     def doc_id(self) -> str:

@@ -41,5 +41,5 @@ class EnsembleDetector:
             out.append(Suggestion(
                 top.page, min(x.start for x in grp), max(x.end for x in grp), top.category,
                 f"{top.reason} Agreed by {len(who)} detector(s): {', '.join(who)}.",
-                max(x.confidence for x in grp), self.name))
+                max(x.confidence for x in grp), self.name, len(who)))
         return sorted(out, key=lambda s: (s.page, s.start))

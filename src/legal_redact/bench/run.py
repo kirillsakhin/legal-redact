@@ -26,7 +26,7 @@ class ExtractionMismatch(RuntimeError):
 
 
 def pages_for(doc: SynthDoc):
-    pages = extract_pages(pymupdf.open(stream=render_pdf(doc), filetype="pdf"))
+    pages = extract_pages(pymupdf.open(stream=doc.pdf or render_pdf(doc), filetype="pdf"))
     if pages[0].text != doc.text:
         raise ExtractionMismatch(f"{doc.doc_id}: extracted text differs from generated text")
     return pages

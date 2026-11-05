@@ -25,11 +25,16 @@ class Policy:
     description: str
     actions: dict[str, str]
     min_confidence: float = 0.0
+    consensus: tuple[str, ...] = ()      # categories whose auto-redaction needs support
+    strong_confidence: float = 0.9       # ...unless one detector is this sure
 
     def action_for(self, s: Suggestion) -> str:
         a = self.actions.get(s.category, REVIEW)       # unknown category -> human
         if a == REDACT and s.confidence < self.min_confidence:
             return REVIEW
+        if (a == REDACT and s.category in self.consensus and s.support < 2
+                and s.confidence < self.strong_confidence):
+            return REVIEW                       # a lone, unsure detector: a human decides
         return a
 
 
@@ -42,7 +47,8 @@ def _parse(data: dict) -> Policy:
     if missing:
         raise ValueError(f"policy must state an action for every category; missing {missing}")
     return Policy(data["name"], data.get("description", ""), dict(actions),
-                  float(data.get("min_confidence", 0.0)))
+                  float(data.get("min_confidence", 0.0)),
+                  tuple(data.get("consensus", ())), float(data.get("strong_confidence", 0.9)))
 
 
 def load_policy(name_or_path: str) -> Policy:

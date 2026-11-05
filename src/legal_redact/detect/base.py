@@ -33,6 +33,7 @@ class Suggestion:
     reason: str         # why we suggest it; shown to the lawyer
     confidence: float   # 0..1; rules with a checksum are near 1, heuristics lower
     detector: str
+    support: int = 1    # how many detectors agreed (set by the ensemble)
 
 
 class Detector(Protocol):
