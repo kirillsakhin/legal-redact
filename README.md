@@ -122,3 +122,45 @@ Read this carefully:
   stays unread until the next change set is ready).
 - Not compared: doc_redaction, commercial tools, LLM-based redaction. Not tested:
   hyphenated line ends, multi-page and tabular layouts, non-Latin scripts, real documents.
+
+## Export and verification (Phase 4)
+
+```
+legal-redact suggest contract.pdf -o decisions.json --policy counterparty
+# review: set each decision's "status" to "accepted" or "rejected" in decisions.json
+legal-redact redact contract.pdf --decisions decisions.json -o contract.redacted.pdf [--ack PF007] [--accept-proposed]
+legal-redact bench-export --n 15
+```
+
+`decisions.json` holds offsets, page boxes, categories and reasons, and no document text.
+Export is blocked while any suggestion is undecided or any pre-flight "review" finding
+is unacknowledged. The writer applies redactions (text under each box is deleted from
+the page, not covered), scrubs metadata, XMP, annotations, links, form values,
+attachments, JavaScript, bookmarks, thumbnails and hidden text, and saves a fresh,
+garbage-collected file. The result is then checked by different libraries than the
+writer (pdfminer.six, pypdfium2, pikepdf). If a check finds a leak, the output is
+deleted and only the report is returned.
+
+Checks: two independent text extractions, characters inside each box (geometry),
+metadata, hidden containers, a raw scan of every decoded object, old revisions, images,
+collateral word loss, boxes visibly filled, page integrity, and layout shift.
+
+**Does the verifier work?** `bench-export` makes a clean export and 13 deliberately leaky
+variants of each synthetic document (cosmetic box only, misaligned box, metadata, XMP,
+annotation, embedded file, white text, invisible text, bookmark, link, JavaScript, form
+value, incremental save). Last run, 15 documents: 0 of 15 clean exports wrongly failed;
+195 of 195 leaky variants caught, each by the check designed for it. This covers the routes
+we thought of. It cannot show that no other route exists.
+
+Things found while building it, and what they mean:
+
+- Writing the verifier's geometry check exposed a writer defect: MuPDF loses the width of
+  the first glyph it removes, so text after a redaction slides left and its first letter
+  can end up under the black box. The writer now starts each removal on the preceding
+  space, which fixes mid-line cases. Redactions at the very start of a line can still shift
+  following text; the verifier warns (3 of 15 clean exports in the last run).
+- A PASS means "no leak found by these checks". Text turned into images or outlines,
+  text under images, and indirect identification are not covered (listed in every report).
+  Digital signatures are invalidated by redaction.
+- Detector misses are a different problem: the verifier checks that what you decided to
+  redact is gone, not that you decided to redact everything.

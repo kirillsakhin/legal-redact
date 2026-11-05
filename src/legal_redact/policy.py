@@ -71,6 +71,7 @@ class Decision:
     proposed: str                      # redact | keep | review (from policy)
     status: str = "pending"            # pending | accepted | rejected
     source: str = "detector"           # detector | manual
+    rects: tuple = ()                  # ((x0, y0, x1, y1), ...) page boxes this decision covers
 
 
 def propose(suggestions: list[Suggestion], policy: Policy) -> list[Decision]:

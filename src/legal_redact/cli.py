@@ -34,6 +34,46 @@ def _inspect(path: str) -> int:
     return 0
 
 
+def _suggest(args) -> int:
+    from .pipeline import save_decisions, suggest
+    from .policy import load_policy
+    if args.detector == "rules":
+        from .detect.rules import RulesDetector
+        det = RulesDetector(names=False)
+    else:
+        from .bench.run import registry
+        det = registry()["ensemble"]()
+    s = suggest(args.pdf, det, load_policy(args.policy))
+    save_decisions(s, args.out)
+    r = s.report()
+    print(f"decisions written: {len(s.decisions)}  status={r['by_status']}")
+    for b in s.blockers():
+        print("blocker:", b)
+    print("Edit statuses to 'accepted' or 'rejected', then run `legal-redact redact`.")
+    return 0
+
+
+def _redact(args) -> int:
+    from .pipeline import ExportRefused, export, load_decisions
+    s = load_decisions(args.pdf, args.decisions)
+    for code in filter(None, args.ack.split(",")):
+        s.acknowledge(code.strip())
+    if args.accept_proposed:
+        print(f"bulk-accepted {s.accept_all_proposed_redactions()} proposed redaction(s)")
+    try:
+        rep = export(args.pdf, args.out, s)
+    except ExportRefused as exc:
+        print(f"REFUSED: {exc}")
+        if exc.report:
+            print(exc.report.format())
+        for b in s.blockers():
+            print("blocker:", b)
+        return 1
+    print(rep.format())
+    print(f"written: {args.out}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="legal-redact")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -48,7 +88,31 @@ def main(argv: list[str] | None = None) -> int:
     bn.add_argument("--n", type=int, default=30, help="documents per template")
     bn.add_argument("--seed", type=int, default=0)
     bn.add_argument("--show-misses", action="store_true")
+    sg = sub.add_parser("suggest", help="detect and write a decision file (no document text in it)")
+    sg.add_argument("pdf")
+    sg.add_argument("-o", "--out", required=True, help="decisions JSON to write")
+    sg.add_argument("--policy", default="counterparty")
+    sg.add_argument("--detector", default="ensemble", choices=["ensemble", "rules"])
+    rd = sub.add_parser("redact", help="export a redacted copy after review, then verify it")
+    rd.add_argument("pdf")
+    rd.add_argument("--decisions", required=True)
+    rd.add_argument("-o", "--out", required=True)
+    rd.add_argument("--ack", default="", help="comma-separated pre-flight REVIEW codes you acknowledge")
+    rd.add_argument("--accept-proposed", action="store_true",
+                    help="bulk-accept pending items the policy proposes to redact (review items stay pending)")
+    be = sub.add_parser("bench-export", help="run the seeded-leak suite against the export verifier")
+    be.add_argument("--n", type=int, default=10, help="documents per template")
     args = ap.parse_args(argv)
+    if args.cmd == "suggest":
+        return _suggest(args)
+    if args.cmd == "redact":
+        return _redact(args)
+    if args.cmd == "bench-export":
+        from .bench import export_suite
+        res = export_suite.run(args.n)
+        print(export_suite.format_result(res))
+        return 0 if not res["clean_fail"] and all(res["caught"][n] == res["total"][n]
+                                                  for n in export_suite.INJECTORS) else 1
     if args.cmd == "inspect":
         return _inspect(args.pdf)
     if args.cmd == "bench":
