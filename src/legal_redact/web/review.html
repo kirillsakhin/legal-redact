@@ -139,6 +139,9 @@ aside{overflow-x:hidden}
 "use strict";
 const T = new URLSearchParams(location.search).get("t") || "";
 let S = null, cur = 0, sel = null, drawMode = false, actSeq = 0;
+// Attestation ticks survive re-renders (any decision action re-renders the panel);
+// the server only receives them at export, so they cannot live in S.
+const ATTESTED = new Set();
 const $ = id => document.getElementById(id);
 
 async function api(path, body) {
@@ -181,20 +184,23 @@ function renderAttestation() {
   box.replaceChildren();
   const required = (S.attestation && S.attestation.required) || [];
   const given = (S.attestation && S.attestation.given) || [];
+  given.forEach(id => ATTESTED.add(id));
   if (!required.length) {
     box.append(el("div", {className: "note", textContent: "No attestations configured."}));
     return;
   }
   required.forEach(item => {
     const cb = el("input", {type: "checkbox", id: "attest-" + item.id,
-                            checked: given.includes(item.id)});
+                            checked: ATTESTED.has(item.id)});
+    cb.onchange = () => {
+      if (cb.checked) ATTESTED.add(item.id); else ATTESTED.delete(item.id);
+    };
     box.append(el("label", {htmlFor: cb.id, className: "note"}, cb, " " + item.label));
   });
 }
 
 function attestationIds() {
-  return [...document.querySelectorAll("#attest input[type=checkbox]:checked")]
-    .map(c => c.id.slice("attest-".length));
+  return [...ATTESTED];
 }
 
 function renderCloudWarning() {

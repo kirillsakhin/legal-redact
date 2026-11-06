@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.1 (2026-11-06)
+
+Review-page fix found while preparing a public demo: the reviewer attestations are only sent to
+the server at export, so any decision action (accept/reject/ack) re-rendered the panel and silently
+cleared the ticks. The page now keeps the ticked attestations in client-side state across renders;
+the server still enforces them at export and records them in the evidence report. No product
+behaviour or artefact format changed; 323 tests green.
+
 ## 0.6.0 (2026-11-06)
 
 Compliance-support follow-up: a standalone DPIA/ROPA input extract and a DSAR/disclosure runbook.
