@@ -1,3 +1,5 @@
+# Changelog
+
 ## 0.3.1 (2026-11-06)
 
 Hands-on testing kit, no functional change to redaction or verification.
@@ -12,7 +14,6 @@ Hands-on testing kit, no functional change to redaction or verification.
 - `docs/TESTING.md`: step-by-step hands-on test plan covering PDF, scans and orientation, `.docx`,
   the fail-closed refusal cases, regression checks, what to report and the known gaps. README links
   it; `testdocs/` is git-ignored.
-# Changelog
 
 ## 0.3.0 (2026-11-06)
 
