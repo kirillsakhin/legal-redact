@@ -98,7 +98,14 @@ On synthetic documents, with a hash-pinned held-out suite (175 documents) that n
 - The export verifier caught 195 of 195 deliberately leaky exports across 13 leak routes and wrongly
   failed 0 of 15 clean ones.
 
-Against doc_redaction 2.8.1 run in batch mode on the same suite, it left between 56% (extended configuration, categories it supports, email excluded) and 100% (shipped defaults, all categories) of documents with a readable personal string, versus 1% for ours when every suggestion is accepted. That is a home-field result: the categories and formats are ours, and the gap mostly reflects layering several detectors on top of a Presidio-only baseline.
+Run in batch mode on the same suite, every other open-source tool we could drive left far more:
+doc_redaction 2.8.1 left 86–100% of documents with a readable personal string (56% on the
+categories it supports with email excluded), a Presidio reference pipeline 49%, and two
+regex-only tools 100%. Ours left 1% when every suggestion is accepted. That is still a
+home-field result — the documents and formats are ours, and the others got no tuning — and it
+costs over-redaction: our suggestions touch 4.5% of protected text, between doc_redaction's two
+configurations. On a third-party rendering-condition benchmark (pdfredeval) the tool fails closed
+rather than release a leaky export, as documented in `docs/BENCHMARKS.md`.
 
 These numbers say how the pieces behave under a controlled protocol. They are not evidence about
 real contracts. The protocol, the failed attempts (an organisation-name veto made things worse),
@@ -107,12 +114,20 @@ the caveats and the open problems are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md
 ## Limitations
 
 - English, text-based, short PDF contracts. No scans or OCR, no DOCX, no other languages.
-- Not tested: real documents, multi-page or tabular layouts, hyphenated line ends, non-Latin scripts.
+- Not tested: real documents, multi-page, multi-column, tabular or form-like layouts, hyphenated
+  line ends, non-Latin scripts.
+- Text laid out vertically or stacked one glyph per line is not reconstructed as a name. On an
+  independent benchmark this left 4 of 27 planted copies behind, and the export was withheld
+  rather than released.
 - Detectors can miss personal data; the verifier checks that what you decided to redact is gone, not
   that you decided to redact everything. Read every page.
 - Redactions at the very start of a line can shift the following text; the verifier warns.
 - Contract dates are sometimes mistaken for dates of birth (suggestions you can reject).
-- Compared against one other tool only (doc_redaction 2.8.1, on our own synthetic suite, with a workaround; see docs/BENCHMARKS.md). Not compared against commercial tools or LLM-based redaction.
+- Compared only against the open-source tools that run as batch programs, on our own synthetic
+  suite (doc_redaction 2.8.1, ltillmann/pdf-redactor, JoshData/pdf-redactor, and a Presidio
+  reference pipeline). An independent third-party benchmark was attempted, but its rendering-
+  condition pages are outside this tool's declared scope and it refused to release a leaky export
+  instead of producing a score. Commercial tools and LLM-based redaction are unmeasured.
 
 ## Security and privacy
 

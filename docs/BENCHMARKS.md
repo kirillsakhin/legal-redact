@@ -101,8 +101,8 @@ the first glyph it removes, so following text slides left under the box). Both a
 ## Not measured
 
 - Real documents of any kind. Human reviewers (the reviewer error rates are simulated).
-- Commercial tools, LLM-based redaction, TypeSafe Jev and AutoTrust JEV-9B (doc_redaction is
-  measured separately below).
+- Commercial tools, LLM-based redaction, TypeSafe Jev and AutoTrust JEV-9B. Other open-source
+  tools are compared separately below.
 - Hyphenated line ends, multi-page and tabular layouts, columns, non-Latin scripts, scans.
 - Open on v4: contract dates are sometimes labelled dates of birth (DOB precision 0.60), the
   likely cause of the remaining protected-text damage (not confirmed); ID span boundaries differ
@@ -119,79 +119,160 @@ legal-redact bench-export --n 15
 Detector arms other than `rules` need the `ml` extra and the models (see the README). GPU is
 optional. Scores can differ slightly between machines and library versions.
 
-## Head-to-head with doc_redaction
+## Comparison with other open-source tools
 
-[doc_redaction](https://github.com/seanpedrick-case/doc_redaction) (AGPL-3.0) is the closest
-open-source tool. It was run as a separate program in its own environment (never bundled or
-copied), and every output PDF was scored the same way as ours, from the output file only
-(`bench/blackbox.py`): a gold personal-data string still extractable by pdfminer.six or pypdfium2
-is a leak; a protected string no longer extractable is lost. Controls in the same table: the
-unredacted source (must leak everything, and does: 100%) and an oracle export built from the gold
-labels (must leak nothing and lose nothing, and does: 0%).
+We ran every tool that could be driven as a batch program over the same pinned 175-document
+suite (holdout v4). Each tool was given the source PDFs and nothing else; every output PDF was
+then scored from the file alone with `bench/blackbox.py`: a gold personal-data string still
+extractable by pdfminer.six or pypdfium2 is a leak, and a protected string no longer extractable
+is lost. The tools were used as shipped (harnesses in `scripts/`, commands below), not tuned.
 
-**This is a home-field comparison.** The categories, formats and layouts are ours, and our
-detectors were developed on documents of the same family. doc_redaction got no tuning at all.
-Treat the gap as an upper bound on any real advantage.
+Controls in the full table: the unredacted source (must leak everything, and does: 100%) and an
+oracle export built from the gold labels (must leak nothing and lose nothing, and does: 0%).
 
-Setup, exactly: PyPI release 2.8.1 (GitHub `main` was 2.9.0), Python 3.14, PyMuPDF 1.28.2, `Local text`
-extraction (the PDFs have selectable text) and local Presidio with `en_core_web_lg`, no OCR, no
-human review, 175 holdout-v4 documents. Two configurations: its shipped default entity list
-(`TITLES, PERSON, PHONE_NUMBER, EMAIL_ADDRESS, STREETNAME, UKPOSTCODE, CUSTOM`) and that list plus
-`IBAN_CODE, CREDIT_CARD, LOCATION`. Its command line exposes no entity for IDs or dates of birth.
+**This is a home-field comparison.** The documents, their layouts and their formats are ours,
+and our detectors were developed on documents of the same family; the other tools got no tuning
+at all. Treat the gap as an upper bound on any real advantage. An attempt to validate on an
+independent third-party benchmark, and why it is not a like-for-like comparison, is at the end of
+this section.
 
-**A workaround was needed.** On this machine the documented command fails, including on the tool's
-own example PDF: it opens `placeholder_image_<n>.png` in the working directory and crashes when
-the file is missing (Poppler, which it expects, is not installed, and I did not download
-third-party binaries). We supplied a real 300 dpi render of each page under that name
-(`scripts/run_doc_redaction.py`). Output boxes were checked by eye and sit correctly over the text.
-A proper install of its prerequisites might behave differently.
+### The tools, as run
+
+- **doc_redaction 2.8.1** (AGPL-3.0, the closest full tool). PyPI release 2.8.1 (GitHub `main`
+  was 2.9.0), Python 3.14, PyMuPDF 1.28.2, `Local text` extraction and local Presidio with
+  `en_core_web_lg`, no OCR, no human review. Two configurations: its shipped default entity list
+  (`TITLES, PERSON, PHONE_NUMBER, EMAIL_ADDRESS, STREETNAME, UKPOSTCODE, CUSTOM`) and that list
+  plus `IBAN_CODE, CREDIT_CARD, LOCATION`. Its command line exposes no entity for IDs or dates of
+  birth. **A workaround was needed:** on this machine the documented command fails, including on
+  its own example PDF, because it opens `placeholder_image_<n>.png` in the working directory and
+  Poppler is not installed; we supplied a real 300 dpi render of each page under that name
+  (`scripts/run_doc_redaction.py`). Output boxes were checked by eye and sit correctly over the
+  text. A proper install of its prerequisites might behave differently.
+- **ltillmann/pdf-redactor** (MIT). Its shipped CLI with every built-in detector enabled
+  (`-e -l -p -s -b -d -f -q -r`): emails, links, phone numbers, IBAN, BIC, dates, timestamps, QR
+  codes and barcodes. By design it does **not** detect names, addresses or IDs. Run from its own
+  environment, one subprocess per document (`scripts/run_ltillmann_pdf_redactor.py`).
+- **JoshData/pdf-redactor** (CC0). Its repository's command-line script is a documented no-op;
+  its README says to use the library with text-filtering functions and points at `example.py`.
+  We used that bundled filter set: an SSN-shaped regex, dash normalisation, a link rewrite and
+  metadata/XMP rewrites. It does not aim at names or addresses at all, so it is a leak floor by
+  design (`scripts/run_joshdata_pdf_redactor.py`). One documented deviation: `example.py`'s
+  `Title` filter raises on PDFs with no `/Title` metadata, so it is made None-safe; metadata is
+  not read by the scorer and every page-text filter is verbatim.
+- **Presidio reference pipeline** (documented glue, not a shipped tool). The "why not just
+  Presidio?" baseline: presidio-analyzer 2.2.366 with `en_core_web_lg`, every default entity,
+  character spans mapped to PyMuPDF word boxes, real redactions (the text is removed, not
+  covered) — `scripts/run_presidio_pipeline.py`.
 
 ### Results (175 documents, holdout v4)
 
-| Tool and mode | Docs with a readable personal string (95% CI) | Protected text lost |
+| Tool and configuration | Docs with a readable personal string (95% CI) | Protected text lost |
 |---|---|---|
 | control: unredacted source | 100% | 0.0% |
 | control: oracle export | 0% (0-2%) | 0.0% |
-| legal-redact, accept every suggestion | 1% (0-4%), all 175 released | 4.5% |
+| **legal-redact, every suggestion accepted** | **1% (0-4%)**, all 175 released | **4.5%** |
 | legal-redact, auto-proposed only (review queue skipped) | 48% (41-56%), 166 released, 9 withheld | 0.7% |
-| doc_redaction, shipped defaults | 100% (98-100%) | 1.6% |
-| doc_redaction, + IBAN, card, location | 86% (80-90%) | 10.1% |
+| doc_redaction 2.8.1, shipped defaults | 100% (98-100%) | 1.6% |
+| doc_redaction 2.8.1, + IBAN, card, location | 86% (80-90%) | 10.1% |
+| ltillmann/pdf-redactor, all built-in detectors | 100% (98-100%) | 27.2% |
+| JoshData/pdf-redactor, bundled example filters | 100% (98-100%) | 0.0% |
+| Presidio reference pipeline (our glue) | 49% (41-56%) | 30.1% |
 
-Restricting to the categories each tool exposes (a document leaks only if one of those leaked):
+Restricting to the categories each tool exposes (a document leaks only if a string of one of
+those categories leaked), which removes the penalty for a tool that never claimed a category:
 
-| Categories | legal-redact (accept all) | doc_redaction |
+| Categories | legal-redact (accept all) | the other tool |
 |---|---|---|
-| PERSON, EMAIL, PHONE, ADDRESS | 1% | 82% (75-87%), shipped defaults |
-| + IBAN, CARD | 1% | 64% (57-71%), extended |
-| PERSON, PHONE, ADDRESS, IBAN, CARD (no EMAIL) | 1% | 56% (49-63%), extended |
+| PERSON, EMAIL, PHONE, ADDRESS | 1% (0-4%) | doc_redaction, shipped defaults: 82% (75-87%) |
+| + IBAN, CARD | 1% (0-4%) | doc_redaction, extended: 64% (57-71%) |
+| PERSON, PHONE, ADDRESS, IBAN, CARD (no EMAIL) | 1% (0-4%) | doc_redaction, extended: 56% (49-63%) |
+| EMAIL, PHONE, IBAN | 0% (0-2%) | ltillmann/pdf-redactor: 96% (92-98%) |
+| ID only (SSN-shaped) | 0% (0-2%) | JoshData/pdf-redactor: 49% (42-56%) |
+| PERSON, EMAIL, PHONE, ADDRESS, CARD, IBAN, ID | 1% (0-4%) | Presidio reference: 49% (41-56%) |
 
 **About the email column.** doc_redaction leaked 33% of email strings. All 58 were on the reserved
 `.test` domain; every `.org` and `.eu` address was redacted. Presidio's email recognizer does not
 treat `.test` as an address, and a third of this suite's emails use it, so the number is an
-artifact of the synthetic data that penalises Presidio-based tools. The tables above therefore
-also show the comparison without EMAIL.
+artifact of the synthetic data that penalises Presidio-based tools. ltillmann's regex catches
+these addresses where Presidio does not, which is part of why the tools' per-category profiles
+differ. The tables above therefore also show the comparison without EMAIL.
 
 ### What this does and does not show
 
-- doc_redaction here behaves much like Presidio (large model) alone, which we had already measured:
-  names recall about 0.8 to 0.9, no address/DOB/ID recognizers in the default setup. What we add is
-  GLiNER, structured-identifier rules with checksums, conflict resolution, consensus review and
-  the verifier. So the gap says "layering these detectors recalls more on this data", which we
-  expected, not "a better tool in general".
-- Our figure is for accept-every-suggestion with no human decisions, the closest match to a batch
-  tool. It costs more suggestions to read. Skipping our review queue leaves 48% of documents leaking,
-  so the queue is not optional. The 9 withheld exports in that mode are documents where the same
-  text was redacted in one place and deliberately left readable in another (a queue item that was
-  skipped), which the verifier correctly refuses.
-- doc_redaction is designed around a human review interface, so its batch output is not its intended
-  end state. Its strengths are outside this suite: scans and OCR, DOCX, spreadsheets, other
-  languages, redaction review workflows.
-- Our protected-text loss (4.5%) is between its two configurations (1.6% and 10.1%).
-- One suite, one run, synthetic data, one tool, version 2.8.1, a workaround on one machine.
-  Commercial tools and LLM-based redaction remain unmeasured.
+- **Recall.** On this suite our accept-every-suggestion mode leaves 1% of documents with a readable
+  personal string. The best other configuration is 49% (a Presidio reference pipeline); the two
+  regex-only tools and doc_redaction's shipped defaults are at 100%. The restricted table shows the
+  same picture when each tool is judged only on categories it claims.
+- **Collateral damage is real, and we do not win every column.** Our suggestions touch 4.5% of
+  protected text: more than doc_redaction's shipped defaults (1.6%) and JoshData's example filters
+  (0%), less than doc_redaction extended (10.1%), ltillmann (27.2%) and the Presidio pipeline
+  (30.1%). Most of ours is contract dates read as dates of birth. That is the price of recall, and
+  the review queue is how a person avoids paying it.
+- **The review queue is not optional.** Accepting only what the policy proposes (skipping the human
+  queue) leaves 48% of documents leaking, so the 1% figure assumes every suggestion is accepted. The
+  9 withheld exports in that mode are documents where the same text was redacted in one place and
+  deliberately left readable in another, which the verifier correctly refuses.
+- **Two tools never claimed names at all.** ltillmann and JoshData's example filters are
+  structured-identifier tools; their 100% in the full table is a scope statement, not a failure. The
+  restricted table is the fair view of them, and even there they leave 96% and 49%.
+- **The task differs.** doc_redaction is designed around a human review interface, so its batch
+  output is not its intended end state, and its strengths are outside this suite: scans and OCR,
+  DOCX, spreadsheets, other languages, review workflows. The Presidio pipeline is glue we wrote, not
+  a product, and its 30.1% protected loss is what untuned default entities do to contracts.
+- One suite, one run, synthetic data, four other tools, a workaround on one machine. Commercial
+  tools and LLM-based redaction remain unmeasured.
 
-Reproduce: run `scripts/run_doc_redaction.py` with doc_redaction's own Python environment over the
-pinned PDFs, then `legal-redact bench-h2h --work DIR --external "label=results.json"`.
+Reproduce, each script in an environment that has its tool's dependencies:
+`scripts/run_doc_redaction.py IN OUT default|extended`, `scripts/run_ltillmann_pdf_redactor.py IN OUT
+TOOL_PDF_REDACTOR_PY TOOL_PYTHON`, `scripts/run_joshdata_pdf_redactor.py IN OUT TOOL_DIR`,
+`scripts/run_presidio_pipeline.py IN OUT`; then
+`legal-redact bench-h2h --work DIR --external "label=results.json"` for each results file.
+
+### Independent benchmark attempt: `pdfredeval`
+
+The only independent benchmark of PDF redaction tools we found is
+[pdfredeval](https://github.com/RedactionTools/pdf-redaction-benchmarks) (AGPL-3.0), which
+publishes black-box results for web redaction services. We ran our tool through it at framework and
+dataset revision `v0.1.1`, on its generated case `extraction-conditions-1` (one page with the same
+invented name planted under 54 rendering conditions: 27 in the text layer, 27 rendered as images)
+and on `pii-detection-1` (a form-like page with 86 probes). The adapter is out of tree
+(`scripts/pdfredeval_adapter/`, pinned to `pdfredeval==0.1.1`); the tool was neither modified nor
+tuned for it.
+
+**The shipped tool cannot be ranked on the published case: it failed closed.** It suggested 71
+spans (all policy-routed to review), the batch flow accepted all of them, and the tool's own
+verifier then found residual copies of the planted name that no accepted box covered
+(pdfminer.six `PERSONx7`, pypdfium2 `PERSONx9`). It refused to release the file. `pdfredeval` has
+no "refused" outcome, so there is no leak rate for the shipped tool there: not 0, and not 1.
+
+Two things can be said, both narrowly:
+
+- **Engine only, clearly separated from the product.** Scoring the artefact the verifier withheld
+  (`keep_failed`, recorded in the run manifest and never presented as shipped behaviour) on the
+  27-probe text-layer scope, the engine leaked 4 of 27 (14.8%, 95% CI 5.9-32.5%). On that same
+  27-probe scope the published tools' own channel reach implies pdf-redaction:web 14.8%,
+  doc_redaction 2.8.1 44.4%, ai-redact:web 51.9% and saferedact-app:web 51.9%. All four leaks are
+  the vertical/stacked text cells. Text retention was 0.672 against the benchmark's 0.9 floor; that
+  failure is inflated by the blind accept-all flow described below. These numbers are not
+  comparable to the published 54-probe headlines (0.222 / 0.444 / 0.741), which include the 27
+  raster probes this tool declares unsupported, and we do not put them side by side.
+- **The second case, shipped.** On `pii-detection-1` the verifier passed and the tool released a
+  file: 0 of 34 in-scope probes leaked, one of five in-scope distractors was over-redacted (a VAT
+  id), 47 probes were out-of-scope categories, and text retention was 0.518. The page is a
+  form-like remittance advice with no published counterpart; retention and over-redaction come
+  from the blind accept-all flow, which also accepts 105 low-confidence `ID` false positives that a
+  reviewer would reject.
+
+The benchmark's published case is deliberately adversarial: one value under 54 renderings,
+including text rendered as images and stacked one glyph per line. This tool declares text-layer
+input only and fails closed rather than release an export it cannot prove. That is the honest
+result: on the part of the independent benchmark the tool actually covers, its engine is level with
+the best published tool; as a product it produces no comparable number, and closing that gap needs
+OCR/vertical-text support and a batch-operable way to resolve review refusals.
+
+Reproduce: `pip install "pdfredeval[score,report,generate]==0.1.1"`, then
+`pip install -e scripts/pdfredeval_adapter`, then `pdfredeval generate all --seed 1` and
+`pdfredeval submit legal-redact:desktop extraction-conditions-1` with `LEGAL_REDACT_HOME` set.
 
 ### Correction, and a verifier bug the comparison exposed
 

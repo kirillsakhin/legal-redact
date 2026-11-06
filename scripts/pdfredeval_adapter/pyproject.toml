@@ -1,0 +1,18 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "legal-redact-adapter"
+version = "0.1.0"
+description = "Out-of-tree pdfredeval adapter for the local legal-redact CLI"
+requires-python = ">=3.10"
+dependencies = ["pdfredeval==0.1.1"]
+license = { text = "AGPL-3.0-or-later" }
+
+# Out-of-tree adapter discovery: pdfredeval.tools.registry.load_entry_points()
+[project.entry-points."pdfredeval.tools"]
+legal-redact-desktop = "legal_redact_adapter.adapter:LegalRedactDesktop"
+
+[tool.hatch.build.targets.wheel]
+packages = ["legal_redact_adapter"]
