@@ -71,6 +71,13 @@ attested to, not just that a button was pressed.
 - every verifier check (id, status, detail) and the verifier's own out-of-scope list;
 - the no-network statement and the "not a compliance certificate" disclaimer.
 
+A companion `--dpia report.md` flag writes a **one-page DPIA/ROPA input extract** from the same
+record: files and hashes, matter/purpose, data categories and volumes, processing environment,
+technical measures, residual risks, attestations, and a checklist for the controller (legal basis,
+necessity/proportionality, retention, recipients/transfers, DPIA decision, DPO advice, sign-off).
+The extract is explicitly not a DPIA. A step-by-step disclosure/DSAR workflow using the presets,
+attestations, evidence and DPIA extract is in [docs/DSAR_WORKFLOW.md](DSAR_WORKFLOW.md).
+
 It also contains, since v0.5.1: the per-matter context you supply (`--controller`, `--matter`,
 `--purpose`, `--reviewer`), the reviewer attestations that were given or the explicit "NOT RECORDED"
 marker, a **residual-risk section** (verifier warnings such as unverified image pixels, acknowledged

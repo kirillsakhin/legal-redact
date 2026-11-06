@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.6.0 (2026-11-06)
+
+Compliance-support follow-up: a standalone DPIA/ROPA input extract and a DSAR/disclosure runbook.
+
+- `redact --dpia PATH` (Markdown, or JSON for a `.json` path) writes a one-page DPIA/ROPA input
+  extract from the same evidence record: files and SHA-256, matter/purpose/reviewer, data categories
+  and volumes, policy, processing environment and OCR engine/locality, technical measures, verifier
+  warnings and detector coverage gaps, reviewer attestations, and an explicit checklist for the
+  controller to complete (legal basis, necessity/proportionality, retention, recipients/transfers,
+  whether a DPIA is required, DPO advice, review date). It is clearly labelled as **not a DPIA** and
+  contains no document text.
+- New `docs/DSAR_WORKFLOW.md`: step-by-step disclosure/DSAR redaction workflow — inspect, choose the
+  `dsar-disclosure` preset, review and attest, export with evidence/DPIA extracts, quality checks
+  (`WARN V112` unread-image handling, second-person sampling), record-keeping and what not to do.
+  Linked from README and COMPLIANCE.
+- README/COMPLIANCE/TESTING updated; `--dpia` works for PDF and DOCX exports.
+- Tests: 1 new (DPIA extract Markdown + JSON: headings/checklist/hashes/no document text). 323 tests
+  green.
+
 ## 0.5.1 (2026-11-06)
 
 Compliance-support quick wins: the evidence report becomes a per-matter workflow record, and the

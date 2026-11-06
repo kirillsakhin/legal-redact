@@ -459,15 +459,19 @@ def _redact(args) -> int:
         return 1
     print(rep.format())
     print(f"written: {args.out}")
-    if getattr(args, "evidence", None):
+    evidence_path = getattr(args, "evidence", None)
+    dpia_path = getattr(args, "dpia", None)
+    if evidence_path or dpia_path:
         try:
-            from .evidence import build_evidence, write_evidence
+            from .evidence import (build_evidence, write_dpia_extract, write_evidence)
             evidence = build_evidence(args.pdf, args.out, s, rep)
-            evidence_path = write_evidence(args.evidence, evidence)
-            print(f"evidence: {evidence_path}")
+            if evidence_path:
+                print(f"evidence: {write_evidence(evidence_path, evidence)}")
+            if dpia_path:
+                print(f"DPIA/ROPA extract: {write_dpia_extract(dpia_path, evidence)}")
         except OSError as exc:
-            print(f"WARNING: the redacted file was written but the evidence report could "
-                  f"not be written ({type(exc).__name__}: {exc})", file=sys.stderr)
+            print(f"WARNING: the redacted file was written but an artifact could not be "
+                  f"written ({type(exc).__name__}: {exc})", file=sys.stderr)
             return 1
     return 0
 
@@ -541,6 +545,10 @@ def main(argv: list[str] | None = None) -> int:
     rd.add_argument("--evidence", default=None, metavar="PATH",
                     help="after a successful export, write a compliance evidence report "
                          "(Markdown; use a .json path for JSON). No document text is included")
+    rd.add_argument("--dpia", default=None, metavar="PATH",
+                    help="after a successful export, write a one-page DPIA/ROPA input extract "
+                         "(Markdown; use a .json path for JSON). It is not a DPIA; the controller "
+                         "completes the legal analysis, retention and sign-off fields")
     be = sub.add_parser("bench-export", help="run the seeded-leak suite against the export verifier")
     be.add_argument("--n", type=int, default=10, help="documents per template")
     args = ap.parse_args(argv)

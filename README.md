@@ -5,7 +5,7 @@
 Review-first redaction of personal data in PDF and Word (`.docx`) contracts, with independent
 checks of the exported file. Local and offline by default.
 
-> **Status: pre-alpha (0.5.1).** Developed and tested on synthetic documents and public contract
+> **Status: pre-alpha (0.6.0).** Developed and tested on synthetic documents and public contract
 > text; not tested on real client documents. It does not make legal determinations, and removing
 > personal data is not anonymisation or GDPR compliance.
 
@@ -146,8 +146,10 @@ section (warnings, acknowledged findings, detector coverage gaps), a DPIA/ROPA i
 reviewer attestations — no document text. Optional per-matter fields `--controller`, `--matter`,
 `--purpose`, `--reviewer` and `--attest special_categories,indirect_identifiers,authorised` are
 recorded in the report. The review page collects the attestations itself before export and writes
-`<output>.evidence.md` automatically. See [docs/COMPLIANCE.md](docs/COMPLIANCE.md) for what the
-report does and does not prove.
+`<output>.evidence.md` automatically. A `--dpia report.md` flag writes a one-page DPIA/ROPA input
+extract (with the controller's legal-basis, retention and sign-off fields left blank). See
+[docs/COMPLIANCE.md](docs/COMPLIANCE.md) for what the reports do and do not prove, and
+[docs/DSAR_WORKFLOW.md](docs/DSAR_WORKFLOW.md) for a step-by-step disclosure/DSAR workflow.
 
 `.docx` uses the same commands; `inspect`, `suggest`, `redact` and `review` detect the format from
 the file. The review page needs Microsoft Word (Windows) or LibreOffice to show the rendered layout;
@@ -394,7 +396,7 @@ empty shims kept only so the 1.x to 2.x upgrade is safe, and carry no licence of
 ## Development
 
 ```
-pytest                                   # 322 tests, core dependencies only; OCR tests skip without Tesseract
+pytest                                   # 323 tests, core dependencies only; OCR tests skip without Tesseract
 legal-redact bench-export --n 15         # can the verifier actually fail?
 ```
 

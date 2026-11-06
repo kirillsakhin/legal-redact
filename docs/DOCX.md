@@ -424,7 +424,7 @@ undecided suggestions and unacknowledged REVIEW findings; mutation tests that di
 replacement, skip a header copy, keep a comment part, skip the metadata scrub or keep source part
 names and show the verifier withholds the file; CLI inspect/suggest/redact end-to-end with no
 document text in the output; and a python-docx-generated document accepted and redacted. The full
-suite (322 tests in this checkout; the number grows as tests are added) stays green.
+suite (323 tests in this checkout; the number grows as tests are added) stays green.
 
 `tests/test_docx_images.py` (25 tests) covers the image path without requiring Tesseract, Word or
 LibreOffice on CI: the fake command engine (which honestly stops reading a region after it is

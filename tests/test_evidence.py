@@ -169,3 +169,48 @@ def test_cli_unknown_attestation_is_refused(tmp_path):
     assert main(["redact", str(src), "--decisions", str(decisions), "-o", str(out),
                  "--attest", "special_categories,bogus", "--evidence", str(evidence)]) == 2
     assert not out.exists() and not evidence.exists()
+
+def test_dpia_extract_markdown_and_json(tmp_path):
+    src = tmp_path / "contract.pdf"
+    doc = _synthetic_pdf(src)
+    decisions = tmp_path / "decisions.json"
+    assert main(["suggest", str(src), "-o", str(decisions), "--detector", "rules",
+                 "--policy", "dsar-disclosure"]) == 0
+    _accept_all(decisions)
+    out = tmp_path / "redacted.pdf"
+    dpia_md = tmp_path / "dpia.md"
+    assert main(["redact", str(src), "--decisions", str(decisions), "-o", str(out),
+                 "--controller", "Example Firm LLP", "--matter", "DSAR-2026-17",
+                 "--purpose", "SAR response", "--reviewer", "A. Lawyer",
+                 "--attest", "special_categories,indirect_identifiers,authorised",
+                 "--dpia", str(dpia_md)]) == 0
+    text = dpia_md.read_text(encoding="utf-8")
+    assert text.startswith("# DPIA / ROPA input extract")
+    for heading in ("## Matter", "## Files", "## Redaction data", "## Processing and measures",
+                    "## Residual risks recorded by the workflow",
+                    "## To be completed by the controller"):
+        assert heading in text
+    assert "Example Firm LLP" in text and "DSAR-2026-17" in text
+    assert "Legal basis (Art. 6)" in text and "[ ]" in text
+    assert "not a dpia" in text.lower()
+    assert "not a compliance certificate" in text
+    # no document text in the extract
+    for gold in doc.gold:
+        value = doc.text[gold.start:gold.end]
+        if len(value) >= 4:
+            assert value not in text
+    # JSON form has the structured fields and the real hashes
+    dpia_json = tmp_path / "dpia.json"
+    assert main(["redact", str(src), "--decisions", str(decisions), "-o",
+                 str(tmp_path / "r2.pdf"), "--controller", "Example Firm LLP",
+                 "--dpia", str(dpia_json)]) == 0
+    data = json.loads(dpia_json.read_text(encoding="utf-8"))
+    assert data["schema"] == "legal-redact-dpia-extract/1"
+    assert data["context"]["controller"] == "Example Firm LLP"
+    assert data["files"]["source"]["sha256"] == hashlib.sha256(src.read_bytes()).hexdigest()
+    assert data["files"]["redacted"]["sha256"] == hashlib.sha256(
+        (tmp_path / "r2.pdf").read_bytes()).hexdigest()
+    assert data["data"]["accepted_by_category"]
+    assert len(data["to_be_completed_by_controller"]) >= 5
+    assert data["measures"]["human_review_gate"] is True
+    assert "not a dpia" in data["disclaimer"].lower()
