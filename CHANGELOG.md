@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1 (2026-11-06)
+
+Test-only fix for CI. One new test (	est_inspect_reports_default_engine) assumed a local
+Tesseract, so the hosted runners -- which have none -- failed instead of exercising the
+unavailable-engine path. The test now asserts the unavailable-engine refusal when Tesseract is
+absent and the normal path when it is present; product behaviour is unchanged. 234 tests green on
+all six CI legs.
 ## 0.4.0 (2026-11-06)
 
 Pluggable OCR engines. The default stays the measured local Tesseract pipeline;

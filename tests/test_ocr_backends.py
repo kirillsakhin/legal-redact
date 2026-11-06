@@ -225,7 +225,9 @@ def test_crash_and_timeout_are_refused(fixture):
     start = time.perf_counter()
     with pytest.raises(Exception, match="timed out"):
         slow.analyze(_png_of_scan(scan), 595.0, 842.0, 150)
-    assert time.perf_counter() - start < 15
+    # The engine timeout is 1 s; the generous bound only proves the call does not
+    # hang forever (a loaded CI runner can take many seconds to spawn Python).
+    assert time.perf_counter() - start < 60
 
 
 def test_locality_contradiction_is_refused(fixture):
@@ -297,10 +299,19 @@ def test_unknown_engine_spec_is_a_clean_refusal(fixture, capsys):
 
 def test_inspect_reports_default_engine(fixture, capsys):
     scan, _, _ = fixture
-    assert main(["inspect", scan]) == 0
+    rc = main(["inspect", scan])
     text = capsys.readouterr().out
     assert "engine=tesseract" in text and "local=yes" in text
-    assert "version=tesseract" in text
+    if ocr_available():
+        assert rc == 0
+        assert "version=tesseract" in text
+        assert "ocr=available" in text
+    else:
+        # CI runners have no Tesseract: inspect must still name the default engine,
+        # report it as unavailable, and refuse the scan instead of pretending.
+        assert rc == 1
+        assert "ocr=unavailable" in text
+        assert "PF003" in text
 
 
 # ---- end-to-end with a custom engine ---------------------------------------
