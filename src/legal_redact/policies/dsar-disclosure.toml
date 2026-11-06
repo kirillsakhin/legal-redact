@@ -1,0 +1,23 @@
+name = "dsar-disclosure"
+description = "Redacting a file for disclosure to a data subject, a regulator or a third party under a data-protection request: remove third-party personal data, then review manually for the requester's own data. Not legal advice; it does not decide exemptions, lawful basis or who may receive the data."
+min_confidence = 0.5
+# A lone name detector at 0.90 or above is treated as strong; everything weaker goes
+# to a human. Higher than contract-sharing on purpose: a disclosure file must not
+# release another person's name because one detector guessed.
+consensus = ["PERSON"]
+strong_confidence = 0.9
+
+# What this preset does NOT decide: whether the disclosure is lawful, which
+# exemptions apply, or whose data may be released. The tool cannot tell the
+# requester's own data from other people's data: it redacts every personal value
+# it finds, so the reviewer must explicitly reject (keep) the requester's details.
+# "Rejected" here is a human decision, not a legal-basis determination.
+[actions]
+PERSON = "redact"
+EMAIL = "redact"
+PHONE = "redact"
+ADDRESS = "redact"
+ID = "redact"
+IBAN = "redact"
+CARD = "redact"
+DOB = "redact"

@@ -113,7 +113,8 @@ def suggest(src: str, detector: Detector, policy: Policy, ocr: bool = True,
                 d.rects = tuple((r.x0, r.y0, r.x1, r.y1) for r in pages[d.page].locate(d.start, d.end))
     finally:
         doc.close()
-    return ReviewSession(decisions, findings, ocr_info=_pin(config) if ocr else None)
+    return ReviewSession(decisions, findings, ocr_info=_pin(config) if ocr else None,
+                         policy=policy.name)
 
 
 def add_repeats(src: str, session: ReviewSession, accept: bool = False,
@@ -136,11 +137,14 @@ def add_repeats(src: str, session: ReviewSession, accept: bool = False,
 
 
 def save_decisions(session: ReviewSession, path: str) -> None:
-    """Decision file: offsets, boxes, categories, reasons, engine pin. No document text."""
+    """Decision file: offsets, boxes, categories, reasons, engine pin, policy name.
+    No document text."""
     data = {"decisions": [asdict(d) for d in session.decisions],
             "acknowledged": sorted(session.acknowledged)}
     if session.ocr_info is not None:
         data["ocr"] = dict(session.ocr_info)
+    if session.policy is not None:
+        data["policy"] = session.policy
     Path(path).write_text(json.dumps(data, indent=1), encoding="utf-8")
 
 
@@ -163,7 +167,8 @@ def load_decisions(src: str, path: str, ocr: bool = True,
     mismatch = _engine_mismatch(recorded, config, ocr_pages)
     if mismatch:
         findings = list(findings) + [Finding("PF022", Severity.REFUSE, mismatch)]
-    s = ReviewSession(decisions, findings, ocr_info=recorded if isinstance(recorded, dict) else None)
+    s = ReviewSession(decisions, findings, ocr_info=recorded if isinstance(recorded, dict) else None,
+                      policy=data.get("policy"))
     s.acknowledged = set(data.get("acknowledged", []))
     return s
 

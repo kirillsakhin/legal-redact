@@ -1,0 +1,23 @@
+name = "publication"
+description = "Publishing a document or using it in training material: strictest review. Redact every personal category and send nearly every lone name to a human. Not legal advice; redaction is not anonymisation and does not decide whether publication is lawful."
+min_confidence = 0.5
+# 0.95 is deliberately above the usual clean single-detector name score: for
+# publication almost every name is reviewed, because the cost of a released name
+# is higher than the cost of an extra review click. Weak suggestions are never
+# auto-approved in any preset.
+consensus = ["PERSON"]
+strong_confidence = 0.95
+
+# What this preset does NOT decide: whether publication is lawful, whether the
+# document is anonymous after redaction (it is not: context can still identify a
+# person), or whether special-category or indirectly identifying data is present
+# (the detectors do not cover those categories comprehensively; a human must look).
+[actions]
+PERSON = "redact"
+EMAIL = "redact"
+PHONE = "redact"
+ADDRESS = "redact"
+ID = "redact"
+IBAN = "redact"
+CARD = "redact"
+DOB = "redact"

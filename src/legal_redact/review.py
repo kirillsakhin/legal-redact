@@ -19,13 +19,15 @@ MANUAL = "MANUAL"
 
 class ReviewSession:
     def __init__(self, decisions: list[Decision], findings: list[Finding],
-                 ocr_info: dict | None = None):
+                 ocr_info: dict | None = None, policy: str | None = None):
         self.decisions = decisions
         self.findings = findings
         self.acknowledged: set[str] = set()
         # Engine pin recorded by suggest ({"engine","version","local","cloud"}); export
         # refuses when the current engine differs. None on sessions that never OCR'd.
         self.ocr_info = ocr_info
+        # Policy name recorded by suggest; used by the compliance evidence report.
+        self.policy = policy
 
     # --- decisions ---------------------------------------------------------
     def accept(self, i: int) -> None:
@@ -90,5 +92,6 @@ class ReviewSession:
             "by_category": dict(Counter(d.category for d in self.decisions if d.status == "accepted")),
             "manual_additions": sum(d.source == "manual" for d in self.decisions),
             "acknowledged_findings": sorted(self.acknowledged),
+            "policy": self.policy,
             "blockers": self.blockers(),
         }

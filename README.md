@@ -5,9 +5,16 @@
 Review-first redaction of personal data in PDF and Word (`.docx`) contracts, with independent
 checks of the exported file. Local and offline by default.
 
-> **Status: pre-alpha (0.4.1).** Developed and tested on synthetic documents and public contract
+> **Status: pre-alpha (0.5.0).** Developed and tested on synthetic documents and public contract
 > text; not tested on real client documents. It does not make legal determinations, and removing
 > personal data is not anonymisation or GDPR compliance.
+
+> **GDPR-aware, not a compliance guarantee.** The tool supports redaction tasks that arise under
+> GDPR and similar regimes (data minimisation, disclosure/DSAR-style redaction) under human review,
+> with independent verification. It does not determine legal bases, does not anonymise, does not
+> comprehensively detect special-category or indirectly identifying data, and is not a DPIA,
+> records-of-processing or DSR workflow. Read [docs/COMPLIANCE.md](docs/COMPLIANCE.md) before using
+> it in a compliance process.
 
 A lawyer opens a short English, text-based PDF or `.docx` contract, picks a disclosure purpose (a
 policy), reviews what the tool suggests and why, and exports a separate redacted copy. The model
@@ -23,20 +30,23 @@ the runs that held them, and comments, hidden text carriers and metadata are rem
 
 | Stage | What happens | Module |
 |---|---|---|
-| 1. Extract | Text and word coordinates, so a text span maps back to boxes on the page. Pages with no usable text layer are OCR'd instead (same word/offset/box model). | `extract.py` |
-| 1b. OCR | Only for pages with no (or almost no) text layer: the local Tesseract engine reads the page image (grayscale) into the same model. A page that already has a text layer is never OCR'd. Pages rotated 90/180 degrees are detected with Tesseract OSD and re-read upright, with every box mapped back to the original page. | `ocr.py` |
+| 1. Extract | Text and word coordinates, so a text span maps back to boxes on the page. Pages with no usable text layer are OCR'd instead (same word/offset/box model). For `.docx`, embedded images are decoded and OCR'd into extra containers whose word boxes are in image pixels. | `extract.py`, `docx/images.py` |
+| 1b. OCR | For pages with no (or almost no) text layer, the local Tesseract engine reads the page image (grayscale) into the same model; for `.docx`, embedded images are read with the same engine abstraction and boxes map back to image pixels. A PDF page that already has a text layer is never OCR'd. Pages rotated 90/180 degrees are detected with Tesseract OSD and re-read upright, with every box mapped back to the original page. | `ocr.py`, `docx/images.py` |
 | 0. Pre-flight | Refuses encrypted files, attachments and XFA forms, and refuses scans when OCR is unavailable or disabled; otherwise flags OCR use and what OCR cannot see, plus images, annotations, forms, scripts, layers. | `preflight.py` |
 | 2. Detect | Rules for structured identifiers (IBAN and card checksums), Presidio, and GLiNER, merged by an ensemble with conflict resolution. | `detect/` |
 | 3. Decide | A policy (TOML) says redact, keep or review per category; the review gate blocks export until every suggestion has a decision. | `policy.py`, `review.py`, `review_server.py` |
-| 4. Remove | Applies redactions (text under each box is deleted), scrubs metadata, annotations, attachments, scripts, bookmarks and hidden text, writes a fresh file. Scanned pages are re-rasterised at 300 dpi and the boxes are burnt into the pixel data, then rebuilt as image-only pages. | `redact.py` |
-| 5. Verify | Re-reads the output with pdfminer.six, pypdfium2 and pikepdf; for rebuilt image pages it also OCRs the output, checks there is no text layer and that the boxes are black in the page image itself; withholds the file if a leak is found. | `verify.py` |
+| 4. Remove | Applies redactions (text under each box is deleted), scrubs metadata, annotations, attachments, scripts, bookmarks and hidden text, writes a fresh file. Scanned pages are re-rasterised at 300 dpi and the boxes are burnt into the pixel data, then rebuilt as image-only pages. Every `.docx` image is re-encoded as metadata-free PNG (pixels preserved; accepted image spans are painted black first) and renamed canonically. | `redact.py`, `docx/write.py` |
+| 5. Verify | Re-reads the output with pdfminer.six, pypdfium2 and pikepdf; for rebuilt image pages it also OCRs the output, checks there is no text layer and that the boxes are black in the page image itself; for `.docx` it rebuilds the canonical image pairing, checks pixel dimensions/black areas/pixel equality, re-OCRs every exported image with the preferred independent reader, checks metadata and original bytes are gone, and reports a WARN (V112) naming any image whose text was never read **or was too small to read reliably**; withholds the file if a leak is found. | `verify.py`, `docx/verify.py` |
 
 Reports and decision files contain categories, page numbers, boxes and counts, never document text.
 
 For `.docx`, stages 0/1/4/5 run through the `docx/` package: extraction builds the same synthetic
 page/offset model from `w:t` runs in the body, headers, footers, notes and text boxes, so the
-detectors and the review gate are reused unchanged; the writer edits the OOXML with lxml and the
-verifier re-reads it with other stdlib readers. The PDF pipeline's behaviour is untouched.
+detectors and the review gate are reused unchanged; text inside embedded images is read with the
+same OCR engine abstraction (each image becomes an extra container whose words carry pixel
+coordinates), and every image is re-encoded as metadata-free PNG with accepted spans painted black
+and re-verified. The writer edits the OOXML with lxml and the verifier re-reads it with other stdlib
+readers. The PDF pipeline's behaviour is untouched.
 
 ## Supported formats
 
@@ -44,12 +54,15 @@ verifier re-reads it with other stdlib readers. The PDF pipeline's behaviour is 
 |---|---|---|---|---|
 | PDF, text layer | yes | yes (`redact.py`) | yes | the original pipeline; unchanged in 0.3.0 |
 | PDF, scanned | OCR (English) with local Tesseract, or a configured custom engine (docs/OCR_BACKENDS.md) | yes, re-rasterised image pages | yes | see `docs/OCR_EVALUATION.md` |
-| `.docx` (OOXML Word) | yes (`docx/`), including headers/footers, notes, text boxes and AutoText | yes (`docx/write.py`), verified fail-closed | **no** — CLI only (`inspect`, `suggest`, `redact`) | `.doc`, `.docm`, encrypted, tracked-changes and macro files are refused; images ≥25% of a page are refused; part names are neutralised. See [docs/DOCX.md](docs/DOCX.md) |
+| `.docx` (OOXML Word) | yes (`docx/`), including headers/footers, notes, text boxes, AutoText and (with OCR) text inside embedded images | yes (`docx/write.py`), verified fail-closed | **yes** — rendered via Microsoft Word or LibreOffice; text review without a renderer | `.doc`, `.docm`, encrypted, tracked-changes and macro files are refused; multi-frame (animated GIF/APNG/WebP, multi-page TIFF) and unreadable/unsupported images are refused; unread large images are refused and unread small ones acknowledged; part names are neutralised. See [docs/DOCX.md](docs/DOCX.md) |
 
 For `.docx` the transport is the same: pre-flight → shared detectors on the extracted text →
-decision file → export → independent verification. The browser review page renders PDF pages, so
-`legal-redact review` says so and stops; DOCX review is through the decision file (edit each
-`"status"` to `"accepted"`/`"rejected"`).
+review page → export → independent verification. The review page renders the .docx through an
+installed Word (Windows COM) or LibreOffice when one is found and draws each suggestion where the
+aligned text appears; the rendered page is a view only. Without a renderer — or when a suggestion
+cannot be placed on the rendered page with confidence — it switches to a text review listing each
+suggestion with a short in-memory context excerpt. The `.docx` itself is always the source of
+truth: export always runs the same writer and verifier, never the rendered PDF.
 
 ## Install
 
@@ -81,9 +94,12 @@ The tool's own code makes no network calls; with the weights cached, the ensembl
 OCR for scanned pages is an external program, not a Python dependency: install Tesseract 5.x with
 the `eng` and `osd` language data (the `osd` data is used to detect and correct rotated pages) and
 put it on PATH, or point `TESSERACT_CMD` at the executable. `legal-redact inspect` reports whether
-it was found. Without it, pages with no text layer are refused exactly as before. OCR runs locally
-and offline; its output is cached nowhere. The measured comparison of OCR configurations and an
-alternative engine (RapidOCR) is in [docs/OCR_EVALUATION.md](docs/OCR_EVALUATION.md).
+it was found. Without it, pages with no text layer are refused exactly as before; text inside
+images embedded in a `.docx` is also read with the same engine (Tesseract by default), and without
+an engine those images are not read (the old fail-closed image rule applies; large unread images are
+still refused because every image must be decodable for the metadata-free re-encode). OCR runs
+locally and offline; its output is cached nowhere. The measured comparison of OCR configurations and
+an alternative engine (RapidOCR) is in [docs/OCR_EVALUATION.md](docs/OCR_EVALUATION.md).
 
 A different reader (a local model, or a paid third-party service through a wrapper you write) can be
 plugged in with `--ocr-engine`/`--ocr-command`; the contract, examples and the two-gate cloud
@@ -91,7 +107,8 @@ procedure are in [docs/OCR_BACKENDS.md](docs/OCR_BACKENDS.md). Engine choice is 
 option, not an accuracy claim.
 
 > **Cloud/third-party OCR is opt-in and doubly gated.** Third-party (cloud) OCR is selected. Page
-> images of this document will be sent to an external OCR service configured by you, outside this
+> images of this document (and, for a `.docx`, its embedded images) will be sent to an external OCR
+> service configured by you, outside this
 > machine. That processing can result in the document being compromised: third-party access,
 > retention and logging, data location and onward transfers, interception, or a provider breach. Do
 > not use cloud OCR for privileged, confidential or client documents unless your firm has approved
@@ -122,22 +139,48 @@ legal-redact suggest contract.pdf -o decisions.json --policy counterparty
 legal-redact redact contract.pdf --decisions decisions.json -o contract.redacted.pdf
 ```
 
-`.docx` uses the same three commands; `inspect`, `suggest` and `redact` detect the format from the
-file. The review page cannot show Word pages, so `review` is PDF-only:
+Add `--evidence report.md` (or a `.json` path) to any `redact` command to write a compliance
+evidence report after a successful export: sizes and SHA-256 of both files, policy, decision counts,
+acknowledged findings, OCR engine/locality, every verifier check and its limits — no document text.
+See [docs/COMPLIANCE.md](docs/COMPLIANCE.md) for what it does and does not prove.
+
+`.docx` uses the same commands; `inspect`, `suggest`, `redact` and `review` detect the format from
+the file. The review page needs Microsoft Word (Windows) or LibreOffice to show the rendered layout;
+without one it is a text review with the same accept/reject/ack/export controls:
 
 ```
+legal-redact review contract.docx
+# rendered mode: boxes over Word's layout, manual boxes accepted only when they map
+# back to a contiguous passage; text mode: suggestions with short context excerpts
 legal-redact inspect contract.docx
 legal-redact suggest contract.docx -o decisions.json --policy counterparty
 # edit statuses; acknowledge pre-flight REVIEW codes you accept, e.g. --ack PF114
 legal-redact redact contract.docx --decisions decisions.json -o contract.redacted.docx --ack PF114
 ```
 
-A `.docx` pre-flight that reports a REVIEW code (comments being stripped, hidden-text carriers, small
-images, custom XML) blocks export until that code is acknowledged with `--ack`. REFUSE findings
+A `.docx` pre-flight that reports a REVIEW code (comments being stripped, hidden-text carriers, image
+OCR use and what it may miss, an unread small image, **very small text** or an image displayed below
+~150 dpi, a same-engine output check, cloud OCR, custom XML) blocks export until that code is
+acknowledged with `--ack`. REFUSE findings
 (encrypted, `.doc`/`.docm`, macros, tracked changes, embedded OLE objects, unknown parts, malformed
-packages, large images, a part/presentation name that reads like an identifier) always block export.
-The `.docx` review step is batch-style — the decision file carries no document text, so open the
-source in Word to see what you are approving; the PDF review page remains the stronger workflow.
+packages, multi-frame/unreadable/unsupported images, an unread large image, engine output that does
+not match the pixels, a part/presentation name that reads like an identifier)
+always block export. Images are read with the selected OCR engine (local Tesseract by default);
+export re-reads every source image and withholds the file if an accepted image passage is still
+readable in another image, every image is re-encoded as metadata-free PNG (pixels preserved; an
+untouched image is pixel-identical, not byte-identical), and the verifier re-reads every exported
+image. An unread or too-small-to-read image's pixels are never certified: the export report carries
+a **WARN V112** naming each affected image ("text not read" or "text was very small ... pixels were
+NOT verified for hidden text"), on top of the PF131/PF133 acknowledgement, and the same WARN row is
+in the evidence report. With `--no-ocr` the
+old rule applies: image text is not read, small images are acknowledged, page-sized images are
+refused; every image is still re-encoded metadata-free and every image is named in V112. A decision
+file that redacts image text records the engine that produced it, and export refuses a different
+engine rather than reinterpret old offsets.
+The rendered page never changes what is redacted — export writes and verifies the `.docx`, and a
+mapping that cannot be trusted produces a text review instead of a possibly-misleading box. On this
+machine a Word-rendered review session pays a one-off Word start-up (about 6 s for the test fixture);
+the text review starts immediately.
 
 Scanned pages are OCR'd automatically where needed. `--no-ocr` (on `inspect`, `suggest`, `redact`
 and `review`) turns OCR off and restores the old fail-closed refusal of pages without a text layer.
@@ -153,8 +196,11 @@ legal-redact inspect scan.pdf --ocr-engine "command:python my_ocr.py" --ocr-loca
 legal-redact suggest scan.pdf -o decisions.json --ocr-engine "command:python my_ocr.py" --ocr-local
 ```
 
-Policies live in `src/legal_redact/policies/*.toml` (`counterparty` and `auditor` are illustrative,
-not legal advice). Pass your own with `--policy path/to/policy.toml`.
+Policies live in `src/legal_redact/policies/*.toml`. Purpose presets: `contract-sharing`,
+`dsar-disclosure`, `publication` (plus the earlier illustrative `counterparty` and `auditor`). They
+are examples, not legal advice, and each states what it does not decide; the compliance scope and
+the exact wording to describe the tool are in [docs/COMPLIANCE.md](docs/COMPLIANCE.md). Pass your
+own with `--policy path/to/policy.toml`.
 
 ## What the verifier checks, and what it cannot
 
@@ -222,19 +268,42 @@ the caveats and the open problems are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md
   custom XML, document-property bags, page thumbnails, alternate text/tooltips/table captions, field
   instructions, hyperlink targets (links become plain text), content-control metadata and document
   variables. See [docs/DOCX.md](docs/DOCX.md).
-- `.docx` known gaps: text inside images is not read — an image covering at least 25% of a page is
-  REFUSED (it may be a pasted scan; convert that page to PDF and redact it as a scan), smaller ones
-  are flagged for review and kept unchanged; presentation-only text in copied parts (style names,
+- `.docx` known gaps: text inside images is read with OCR and can be redacted, but OCR misreads are
+  invisible to detection and to the output check, and handwriting, signatures, stamps, photographs
+  and very-low-resolution text are not understood. An image in which the engine finds no words is
+  REFUSED when it is large/content-bearing (it cannot be certified) and needs an explicit
+  acknowledgement when it is small ("pixels were NOT checked ... personal data may survive"); an
+  image displayed below about 150 dpi or containing very small text (a large share of OCR word boxes
+  under ~12 px at native resolution) is a REVIEW, and engine word boxes that sit on uniform/blank
+  pixels refuse the file (contrast-based ink evidence, so valid low-contrast text is accepted).
+  Every export report carries a **WARN V112** naming each image whose text was never read **or was
+  too small to read reliably** (and the same WARN row is in the evidence report), so a PASS never
+  silently claims those pixels were verified. Animated GIF, APNG, animated WebP,
+  multi-page TIFF and undecodable/unsupported/oversized images are REFUSED rather than silently
+  copied; a single-frame GIF is accepted and normalised to PNG. **Every** image in an export is
+  re-encoded as lossless PNG at the same pixel size with metadata stripped (JPEG/GIF/etc. becomes
+  PNG; file size may grow), so an untouched image is pixel-identical but not byte-identical and its
+  GPS/author/ICC metadata is gone. Image suggestions are listed in the review page but drawn without
+  a box (their position on the rendered page is not resolvable without guessing). The image OCR
+  output check can raise a false alarm (and withhold the file) when a redacted phrase is a compact
+  prefix of unredacted text in another image. Presentation-only text in copied parts (style names,
   list-numbering format text, embedded font family names, theme/settings values) is not inspected
   or redacted, though structured identifiers in it refuse the file — PF126 reports how much exists
   and is informational, so a person-shaped name in a style or font name is disclosed but does not
   block a batch export; numeric values are only treated
   as geometry in the known `wp:posOffset`/`wp14:pctSize` layout elements and every other numeric
-  text node is refused; a decomposed-Unicode (NFD) name can evade detection (same gap as PDF); the
-  browser review page is PDF-only, so **`.docx` review is batch-style and weaker** — the decision
-  file contains no document text, so the lawyer must open the source in Word to review it.
-  Over-redaction is possible where Word stores the same content twice (AlternateContent choice and
+  text node is refused; a decomposed-Unicode (NFD) name can evade detection (same gap as PDF);
+  over-redaction is possible where Word stores the same content twice (AlternateContent choice and
   fallback are both redacted).
+- `.docx` review page: rendered mode needs Microsoft Word (Windows) or LibreOffice installed
+  (detected, never installed) and costs a one-off Word start-up per review session (about 6 s on
+  this machine). It is fail-closed by design: a suggestion is only drawn when its text can be
+  aligned to the rendered pages with confidence, and otherwise the whole page falls back to text
+  review — a box that might be the wrong text is never shown. Manual boxes must fully contain whole
+  words and map back to one contiguous .docx passage, or they are rejected. The rendered PDF is
+  temporary and contains the unredacted document while the review page is open; it is deleted at
+  session end. LibreOffice was implemented and unit-tested but not exercised on a machine with
+  LibreOffice installed; the Word path is exercised end-to-end. See [docs/DOCX.md](docs/DOCX.md).
 - Scans that are sideways or upside down cost one extra OCR pass: pre-flight runs Tesseract's
   orientation detector on every page it will OCR (about 0.4 s per scanned page), and a page whose
   orientation cannot be determined is a REVIEW finding (PF018), never a silent guess. A detected
@@ -280,11 +349,15 @@ the caveats and the open problems are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md
 ## Security and privacy
 
 The review page serves a confidential document, so it binds to 127.0.0.1 only, makes no external
-requests, requires a random token per run, checks the Host header, sends a strict
-content-security policy, and its API never returns document text. Decisions autosave to
-`<pdf>.decisions.json` without document text. Anyone with access to your user session can still
-read your files; this is a local tool, not a multi-user service. See [SECURITY.md](SECURITY.md) and
-[docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
+requests, requires a random token per run, checks the Host header, sends a strict content-security
+policy, and its API carries no document text in rendered mode. The `.docx` text review does return
+short context excerpts to the local page so the lawyer can see what they are deciding; those
+excerpts exist only in memory and are never written to the decision file, reports or logs. Decisions
+autosave to `<file>.decisions.json` without document text. A `.docx` rendered review asks an installed
+Word or LibreOffice to render the source into a temporary PDF (deleted when the session ends); that
+is the user's own office program, not a network service. Anyone with access to your user session can
+still read your files; this is a local tool, not a multi-user service. See [SECURITY.md](SECURITY.md)
+and [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
 
 Do not put real client documents in issues, tests or benchmarks. All test data is synthetic.
 
@@ -316,7 +389,7 @@ empty shims kept only so the 1.x to 2.x upgrade is safe, and carry no licence of
 ## Development
 
 ```
-pytest                                   # 234 tests, core dependencies only; OCR tests skip without Tesseract
+pytest                                   # 318 tests, core dependencies only; OCR tests skip without Tesseract
 legal-redact bench-export --n 15         # can the verifier actually fail?
 ```
 

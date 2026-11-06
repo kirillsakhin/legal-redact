@@ -156,12 +156,45 @@ only; rasterised pages are not searchable; a name OCR misreads cannot be redacte
 pre-flight); text inside images on a page that has its own text layer is still not detected; heavy
 skew and handwriting are not handled. See `docs/THREAT_MODEL.md` T14-T18.
 
+## DOCX embedded images (v0.5, new suite)
+
+Introduced in v0.5: text inside a `.docx` image is read with the same OCR engine as scanned PDFs,
+redacted in the pixels and re-verified on export. This change set got a **new** suite,
+`docx-img-v05` (distinct from every earlier suite): 12 synthetic contracts rendered at 200 dpi,
+lightly JPEG-degraded and embedded as the only content of a `.docx`; 93 planted personal values and
+60 protected values; suite fingerprint `cf6209d5c22b6287e7aae5e9d7842c3a73230a7a1192ac61befa0c785187ca31`.
+Method: full ensemble `suggest` -> acknowledge all REVIEW findings -> accept every pending decision
+-> `export_docx` (writer + V101-V111 verifier); then re-OCR the exported image with Tesseract at
+300 dpi geometry and search for the planted values, and search every raw package part for the
+original image bytes. Harness: `_legalredact_publish/docx_img_eval/` in the development workspace
+(not shipped; the suite is spent after this score).
+
+| Metric | Result |
+|---|---|
+| Documents exported / verifier PASS | 12/12 / 12/12 |
+| Planted personal values recoverable from the exported image | **0 / 93** |
+| Original image bytes present anywhere in the package | 0 / 12 |
+| Protected values readable before and still readable after | **59 / 59** |
+| Export time per document (writer + three image-OCR passes by design) | ~2.3-2.8 s |
+| Suggest time, 12 docs, including one-off ensemble model load | 22.8 s |
+
+Caveats: synthetic pages, local Tesseract only, English printed text; the leak check is an OCR
+re-read, so it measures what OCR can recover, not what a human or another engine could. Handwriting,
+stamps, photographs, unusual scripts and very low-resolution images stay outside the OCR guarantee
+and are disclosed by pre-flight (PF113/PF129/PF131/PF133, with the WARN V112 disclosure on export).
+The timing rows were re-measured on the final v0.5.0 tree after the independent-audit hardening
+(every source image is re-read at export and every image is re-encoded metadata-free); the leak,
+retention and original-byte results were unchanged by those fixes. Before v0.5 embedded images were
+copied unchanged (a page-sized image refused the file), so this is added coverage, not a measured
+improvement of the same pipeline.
+
 ## Not measured
 
 - Real documents of any kind. Human reviewers (the reviewer error rates are simulated).
-- `.docx`: unit-tested (199 tests, including adversarial fixtures) and independently audited, but
-  **not benchmarked** — no comparable `.docx` redaction benchmark was run. Its guarantees are
-  fail-closed refusals and the verifier's independent re-read, not a measured leak rate.
+- `.docx`: unit-tested (318 tests, including adversarial fixtures) and independently audited; one
+  measured suite for embedded-image redaction (above), but no benchmark of document-level redaction
+  on real Word layouts. Its guarantees are fail-closed refusals and the verifier's independent
+  re-read, not a general measured leak rate.
 - Commercial tools, LLM-based redaction, TypeSafe Jev and AutoTrust JEV-9B. Other open-source
   tools are compared separately below.
 - Real client email domains: the `.test` domain in the synthetic suites is an artefact that

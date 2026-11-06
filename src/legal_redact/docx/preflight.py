@@ -16,8 +16,11 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 from ..models import Finding, Severity
-from .extract import extract_from_parts, localname
-from .package import CT_NAME, DocxError, FileKind, file_kind, read_package_bytes
+from ..ocr_backends import CLOUD_OCR_DISCLAIMER, EngineConfig, default_config
+from . import images as image_tools
+from .extract import extract_from_parts, localname, parse_xml
+from .package import (CT_NAME, DocxError, FileKind, file_kind, read_package_bytes,
+                      rels_owner, resolve_target)
 
 REFUSE, REVIEW, INFO = Severity.REFUSE, Severity.REVIEW, Severity.INFO
 
@@ -435,7 +438,241 @@ def _structural_value_refusal(parts: dict[str, bytes], layout) -> Finding | None
     return None
 
 
-def preflight_docx(path: str | Path) -> list[Finding]:
+def _old_image_findings(add, roots, layout, why: str) -> None:
+    """Fail-closed image rule without a usable OCR engine (v0.4 behaviour).
+
+    Every image is still decoded (see ``_image_findings``) and re-encoded
+    metadata-free on export, but its text is not read.
+    """
+    areas = _image_areas_emu2(roots)
+    page_area = _page_area_emu2(roots)
+    large = [area for area in areas if page_area and area / page_area >= LARGE_IMAGE_SHARE]
+    if large:
+        share = max(large) / page_area if page_area else 0.0
+        add(REFUSE, "PF123",
+            f"{len(large)} image(s) cover at least {LARGE_IMAGE_SHARE:.0%} of a page "
+            f"(largest about {share:.0%}). Text inside images is not read ({why}), so a "
+            "pasted scan or photographed page cannot be redacted here: convert that page "
+            "to PDF and redact it as a scan, or remove the image.")
+    elif layout.media_parts:
+        add(REVIEW, "PF113",
+            f"{len(layout.media_parts)} image file(s) present. Text inside images is not "
+            f"read ({why}); images are re-encoded as metadata-free PNG with their pixels "
+            "preserved, but their text is not checked — check every image yourself. An "
+            "image that is a scan or photo of text cannot be redacted in .docx — convert "
+            "that page to PDF and redact it as a scan.")
+
+
+_A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+_R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+
+
+def _media_display(package, roots) -> dict[str, list[tuple[int, int]]]:
+    """Media part -> the display extents (cx, cy in EMU) that reference it.
+
+    Used only to judge unread/low-resolution images; a part with no resolvable
+    reference is treated as "size unknown" (fail closed for an unread image).
+    """
+    media = set(package.layout.media_parts)
+    out: dict[str, list[tuple[int, int]]] = {}
+    for part in package.layout.text_parts:
+        root = roots.get(part)
+        if root is None:
+            continue
+        rels_name = (_rels_name(part))
+        rels_root = None
+        if rels_name in package.parts:
+            try:
+                rels_root = parse_xml(package.parts[rels_name])
+            except Exception:
+                rels_root = None
+        rel_map: dict[str, str] = {}
+        if rels_root is not None:
+            for element in rels_root:
+                if localname(element.tag) == "Relationship":
+                    target = element.get("Target") or ""
+                    rel_map[element.get("Id") or ""] = resolve_target(rels_name, target)
+        for element in root.iter():
+            if localname(element.tag) != "blip":
+                continue
+            target = rel_map.get(element.get(f"{{{_R_NS}}}embed") or "")
+            if target not in media:
+                continue
+            node = element
+            extent = None
+            while node is not None:
+                if localname(node.tag) in ("inline", "anchor"):
+                    for child in node:
+                        if localname(child.tag) == "extent":
+                            extent = child
+                            break
+                    break
+                node = node.getparent()
+            if extent is None:
+                out.setdefault(target, [])
+                continue
+            try:
+                size = (int(extent.get("cx") or 0), int(extent.get("cy") or 0))
+            except (TypeError, ValueError):
+                size = (0, 0)
+            out.setdefault(target, []).append(size)
+    return out
+
+
+def _rels_name(part: str) -> str:
+    import posixpath
+    return posixpath.join(posixpath.dirname(part), "_rels",
+                          posixpath.basename(part) + ".rels")
+
+
+EMU_PER_INCH = 914400
+
+
+def _display_metrics(reading, display, page_area: float):
+    """(area share of a page or None, minimum effective dpi or None) for one image."""
+    refs = display.get(reading.part.name)
+    if not refs:
+        return None, None   # no resolvable reference: cannot certify the size
+    shares = [width * height / page_area for width, height in refs
+              if width > 0 and height > 0 and page_area > 0]
+    dpis = [reading.part.width / (width / EMU_PER_INCH) for width, _height in refs
+            if width > 0]
+    return (max(shares) if shares else None,
+            min(dpis) if dpis else None)
+
+
+def _low_confidence_findings(add, readings, display, page_area: float) -> None:
+    """F3: unread, low-resolution or very-small-text images cannot be silently trusted."""
+    zero_refuse: list[int] = []
+    zero_review: list[int] = []
+    low_res: list[int] = []
+    tiny: list[int] = []
+    for index, reading in enumerate(readings):
+        share, dpi = _display_metrics(reading, display, page_area)
+        if reading.words == 0:
+            # A large / content-bearing unread image cannot be certified by review;
+            # a small one is an explicit acknowledgement, not a silent PASS.
+            if share is None or share >= image_tools.LARGE_UNREAD_SHARE or (
+                    len(readings) == 1 and share >= image_tools.SINGLE_IMAGE_UNREAD_SHARE):
+                zero_refuse.append(index)
+            else:
+                zero_review.append(index)
+        elif image_tools.tiny_text(reading):
+            # Tiny text at native resolution is a documented missed-text risk even
+            # when the engine returned some (misread) words. Same condition/constants
+            # as the V112 WARN in the export report.
+            tiny.append(index)
+        if dpi is not None and dpi < image_tools.LOW_RES_DPI:
+            low_res.append(index)
+    if zero_refuse:
+        add(REFUSE, "PF132",
+            f"The OCR engine found no text in {len(zero_refuse)} image(s) that cover(s) a "
+            "large part of a page (or whose displayed size cannot be established). Rotated, "
+            "tiny, low-contrast or handwritten text can hide there, so the file cannot be "
+            "certified: remove the image, redact it as a PDF/OCR scan, or run with a reader "
+            "that reads it.")
+    if zero_review:
+        add(REVIEW, "PF131",
+            f"No text could be read in {len(zero_review)} small image(s). Their pixels were "
+            "NOT checked by the export verifier and personal data in them may survive the "
+            "export. Open every such image yourself before acknowledging this finding.")
+    if low_res or tiny:
+        parts = []
+        if low_res:
+            parts.append(f"{len(low_res)} image(s) are displayed larger than their pixels "
+                         f"support (effective resolution below about "
+                         f"{image_tools.LOW_RES_DPI:.0f} dpi)")
+        if tiny:
+            parts.append(f"{len(tiny)} image(s) contain very small text (at least "
+                         f"{image_tools.TINY_WORD_SHARE:.0%} of OCR word boxes are under "
+                         f"{image_tools.TINY_WORD_HEIGHT_PX:.0f} native pixels high)")
+        add(REVIEW, "PF133",
+            "; ".join(parts) + ". OCR may miss that text and it would then not be "
+            "redacted; check those images and acknowledge.")
+
+
+def _image_findings(add, package, layout, roots, *, ocr: bool, engine_config) -> None:
+    """Image findings: decode/refuse checks always, then OCR findings when usable."""
+    config: EngineConfig = engine_config or default_config()
+
+    # F2/F4: every image is decoded (metadata is stripped on export), multi-frame
+    # containers are refused BEFORE any decode-and-copy, unsupported/oversized
+    # images are refused even with --no-ocr.
+    parts, decode_errors = image_tools.scan_images(package)
+    if decode_errors:
+        reasons = "; ".join(sorted(set(decode_errors))[:3])
+        add(REFUSE, "PF127",
+            f"{len(decode_errors)} embedded image(s) cannot be read safely ({reasons}). "
+            "Text in pixels could exist and cannot be redacted here, so the file is "
+            "refused (fail closed).")
+        return
+    display = _media_display(package, roots)
+    page_area = _page_area_emu2(roots)
+
+    if not ocr:
+        _old_image_findings(add, roots, layout, why="OCR is disabled for this run (--no-ocr)")
+        return
+    cloud_blocked = (not config.local) and (not config.allow_cloud)
+    if cloud_blocked:
+        add(REFUSE, "PF020",
+            "A non-local (cloud/third-party) OCR engine is selected but not approved for "
+            "this run. Sending embedded images to an external OCR service can compromise "
+            "the document. Re-run with --allow-cloud-ocr (or "
+            "LEGAL_REDACT_ALLOW_CLOUD_OCR=1) if your firm has approved the service and the "
+            "transfer is lawful; see docs/OCR_BACKENDS.md. No OCR call was made.")
+        return
+    name, version, available, error = image_tools.engine_summary(config)
+    if not available:
+        if config.spec == "tesseract":
+            _old_image_findings(add, roots, layout,
+                                why="OCRed text in images needs a local Tesseract, which "
+                                    "was not found")
+        else:
+            add(REFUSE, "PF020",
+                f"The configured OCR engine is unavailable or invalid ({error}). Fix "
+                "--ocr-engine/--ocr-command (see docs/OCR_BACKENDS.md); no image was read.")
+        return
+    readings, ocr_errors = image_tools.read_images(package, config, page_offset=0)
+    if ocr_errors:
+        add(REFUSE, "PF128",
+            f"The OCR engine could not read {len(ocr_errors)} embedded image(s); text in "
+            "pixels cannot be redacted, so the file is refused (fail closed).")
+        return
+    untrusted = image_tools.untrusted_word_boxes(readings)
+    if untrusted:
+        add(REFUSE, "PF128", untrusted)
+        return
+    _low_confidence_findings(add, readings, display, page_area)
+    words = sum(reading.words for reading in readings)
+    with_words = sum(1 for reading in readings if reading.words)
+    engine_label = (name or config.spec) + (f" {version}" if version else "")
+    locality = "local" if config.local else "NON-LOCAL (third-party)"
+    add(REVIEW, "PF113",
+        f"{len(readings)} image file(s) will be read with OCR ({engine_label}, {locality}). "
+        "Text inside images can now be redacted; OCR can misread, and handwriting, stamps, "
+        "signatures and photographs are not understood — check every image yourself.")
+    if not config.local:
+        add(REVIEW, "PF019", CLOUD_OCR_DISCLAIMER)
+    reader, independent, reader_label = image_tools.verification_reader(config)
+    if not independent:
+        add(REVIEW, "PF130",
+            "No independent OCR reader is available for the output image check: Tesseract "
+            f"was not found, so images will be re-read with the same engine "
+            f"({reader_label}). That is a weaker cross-check; acknowledge it.")
+    add(INFO, "PF129",
+        f"Image OCR: {words} word(s) found in {with_words} of {len(readings)} image(s). "
+        "The OCR text is used in memory for review only; it is never written to decision "
+        "files or reports.")
+    rotated = sum(1 for reading in readings if reading.rotation)
+    if rotated:
+        add(INFO, "PF129",
+            f"{rotated} image(s) were reported as rotated by the OCR engine; the review "
+            "page lists their text for a human check.")
+
+
+def preflight_docx(path: str | Path, *, ocr: bool = True,
+                   engine_config: EngineConfig | None = None,
+                   image_scan: bool = True) -> list[Finding]:
     """Inspect a .docx; return findings. Never raises for hostile input."""
     out: list[Finding] = []
     add = lambda kind, code, message: out.append(_ext(kind, code, message))  # noqa: E731
@@ -564,25 +801,11 @@ def preflight_docx(path: str | Path) -> list[Finding]:
             "content is not read for detection; all comments are removed on export.")
 
     # --- images -------------------------------------------------------------
-    # A .docx writer cannot remove text burnt into pixels. A large picture is
-    # therefore refused (it may be a pasted scan or a photographed page), while a
-    # small one (logo, icon, signature block) is a REVIEW the lawyer acknowledges.
-    areas = _image_areas_emu2(roots)
-    page_area = _page_area_emu2(roots)
-    large = [area for area in areas if page_area and area / page_area >= LARGE_IMAGE_SHARE]
-    if large:
-        share = max(large) / page_area if page_area else 0.0
-        add(REFUSE, "PF123",
-            f"{len(large)} image(s) cover at least {LARGE_IMAGE_SHARE:.0%} of a page "
-            f"(largest about {share:.0%}). A .docx export cannot remove text that lives "
-            "in pixels, so a pasted scan or photographed page cannot be redacted here: "
-            "convert that page to PDF and redact it as a scan, or remove the image.")
-    elif layout.media_parts:
-        add(REVIEW, "PF113",
-            f"{len(layout.media_parts)} image file(s) present. Text inside images is not "
-            "read and images are kept unchanged; check every image yourself. An image "
-            "that is a scan or photo of text cannot be redacted in .docx — convert that "
-            "page to PDF and redact it as a scan.")
+    # With an OCR engine the pixels are read, can be redacted and are checked on
+    # export. Without one the old fail-closed rule stands: a large picture is
+    # refused (pixels cannot be removed) and a small one is a REVIEW.
+    if image_scan and layout.media_parts:
+        _image_findings(add, package, layout, roots, ocr=ocr, engine_config=engine_config)
     if layout.font_parts:
         add(INFO, "PF126",
             f"{len(layout.font_parts)} embedded font file(s) present; they are copied "

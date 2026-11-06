@@ -194,7 +194,12 @@ def make_docx(tmp_path, name: str = "doc.docx", *, body: str | None = None,
             "application/vnd.openxmlformats-officedocument.wordprocessingml.people+xml")
         package_rels.append(("rId8", R + "/people", "word/people.xml", False))
     if media:
-        parts["word/media/image1.png"] = b"\x89PNG\r\n\x1a\n" + b"0" * 32
+        # A real (1x1 white) PNG: readable by the image path, so tests that do
+        # exercise image OCR get a decodable image on any machine.
+        import base64
+        parts["word/media/image1.png"] = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAE"
+            "hQGAhKmMIQAAAABJRU5ErkJggg==")
         defaults["png"] = "image/png"
         doc_rels.append(("rId40", R + "/image", "media/image1.png", False))
     sect = f'<w:sectPr>{sect}<w:pgSz w:w="11906" w:h="16838"/></w:sectPr>'
@@ -521,22 +526,33 @@ def test_custom_xml_parts_are_stripped_and_flagged(tmp_path):
     assert "Alice Example" not in all_bytes(out)
 
 
-def test_images_are_flagged_for_review_and_copied_unchanged(tmp_path):
+def test_images_without_ocr_are_flagged_for_review_and_reencoded(tmp_path):
+    # The old fail-closed rule, forced deterministically with ocr=False so the
+    # test does not depend on whether this machine has Tesseract. F4: even
+    # without reading them, images are re-encoded metadata-free (pixels kept).
+    from legal_redact.docx.images import decode_image
+    from legal_redact.docx.preflight import preflight_docx
     src = make_docx(tmp_path, body=para(run("Borrower: Alice Example.")) + para(picture()),
                     media=True)
-    assert "PF113" in codes(src)
-    session = suggest(src, [("Alice Example", Category.PERSON)])
+    assert "PF113" in {f.code for f in preflight_docx(src, ocr=False)}
+    session = suggest_docx(str(src), FakeDetector([("Alice Example", Category.PERSON)]),
+                           POLICY, ocr=False)
     accept_all(session)
     acknowledge_reviews(session)
     out = tmp_path / "out.docx"
-    report = export(session, src, out)
+    report = export_docx(str(src), str(out), session, ocr=False)
     assert report.passed
     media = {name: data for name, data in raw_parts(out).items()
              if name.startswith("word/media/")}
     assert len(media) == 1
     name, payload = next(iter(media.items()))
-    assert name.startswith("word/media/redacted_")          # neutral generated name
-    assert payload == raw_parts(src)["word/media/image1.png"]
+    assert name.startswith("word/media/redacted_") and name.endswith(".png")
+    source = decode_image(raw_parts(src)["word/media/image1.png"])
+    output = decode_image(payload)
+    assert (output.width, output.height) == (source.width, source.height)
+    assert bytes(output.samples) == bytes(source.samples)      # pixels preserved
+    assert payload != raw_parts(src)["word/media/image1.png"]  # metadata-free re-encode
+    assert "V109" in {check.id for check in report.checks if check.status == "PASS"}
 
 
 def test_anchored_textbox_is_not_a_false_refusal(tmp_path):
@@ -558,14 +574,14 @@ def test_large_image_is_refused_as_unreadable_pixels(tmp_path):
     # page is US Letter: 12240 x 15840 twips; a ~7.3 x 5.2 inch picture is >25%
     body = para(run("Body.")) + para(picture(cx=6700000, cy=4800000))
     src = make_docx(tmp_path, body=body, media=True)
-    findings = preflight_docx(src)
+    findings = preflight_docx(src, ocr=False)
     assert "PF123" in {f.code for f in findings}
     assert blocked(findings)
     # a small logo stays an acknowledgeable REVIEW, not a refusal
     small = make_docx(tmp_path, name="small.docx",
                       body=para(run("Body.")) + para(picture(cx=900000, cy=600000)),
                       media=True)
-    small_findings = preflight_docx(small)
+    small_findings = preflight_docx(small, ocr=False)
     assert not blocked(small_findings)
     assert "PF113" in {f.code for f in small_findings}
 
@@ -892,13 +908,15 @@ def test_verifier_withholds_when_part_names_are_kept(tmp_path, monkeypatch):
     import legal_redact.docx.write as docx_write
     src = make_docx(tmp_path, body=para(run("Borrower: Alice Example.")) + para(picture()),
                     media=True)
-    monkeypatch.setattr(docx_write, "_neutral_renames", lambda layout, names: {})
+    monkeypatch.setattr(docx_write, "_neutral_renames",
+                        lambda layout, names, edited_images=None: {})
     out = tmp_path / "out.docx"
-    session = suggest(src, [("Alice Example", Category.PERSON)])
+    session = suggest_docx(str(src), FakeDetector([("Alice Example", Category.PERSON)]),
+                           POLICY, ocr=False)
     accept_all(session)
     acknowledge_reviews(session)
     with pytest.raises(ExportRefused) as caught:
-        export(session, src, out)
+        export_docx(str(src), str(out), session, ocr=False)
     assert not out.exists()
     assert {"V106", "V108"} & {c.id for c in caught.value.report.failed()}
 
@@ -944,11 +962,24 @@ def test_cli_inspect_suggest_redact_end_to_end(tmp_path, capsys):
     assert "alice@example.test" not in printed
 
 
-def test_cli_review_reports_pdf_only(tmp_path, capsys):
+def test_cli_review_docx_uses_docx_backend(tmp_path, monkeypatch, capsys):
     from legal_redact.cli import main
+    import legal_redact.docx.review as review
+
+    captured = {}
+
+    def fake_serve(src, session, decisions_path, port=0, open_browser=True, renderer=None,
+                   engine_config=None, ocr=True):
+        captured["src"] = src
+        captured["mode"] = "text"
+
+    monkeypatch.setattr(review, "serve_docx", fake_serve)
+    monkeypatch.setenv("LEGAL_REDACT_RENDERER", "none")
     src = make_docx(tmp_path)
-    assert main(["review", str(src)]) == 2
-    assert "PDF" in capsys.readouterr().out
+    assert main(["review", str(src), "--detector", "rules", "--no-browser"]) == 0
+    assert captured["src"] == str(src)
+    assert captured["mode"] == "text"
+    capsys.readouterr()
 
 
 def test_output_opens_in_python_docx_and_shows_blocks(tmp_path):

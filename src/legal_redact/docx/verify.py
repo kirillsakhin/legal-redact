@@ -24,6 +24,7 @@ from collections import Counter
 from xml.etree import ElementTree as ET
 
 from ..verify import FAIL, PASS, WARN, Check, VerifyReport
+from . import images as image_tools
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
@@ -59,8 +60,12 @@ SAFE_REL_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 SAFE_REL_VALUE = re.compile(r"^[A-Za-z0-9._/:%#?=&+@~-]+$")
 
 DOCX_LIMITS = [
-    "Text inside images is not read and images are copied unchanged; check every image yourself. A pasted scan or photographed page must be redacted as a PDF/OCR page, not as DOCX.",
-    "Tracked changes are refused before export, never resolved; a document with revisions cannot be processed.",
+    "Images are read with local English OCR (or the OCR engine you configured): a character it misreads is invisible to both detection and the output check; handwriting, stamps, signatures, photographs and text at very low resolution are not understood. An image in which the engine finds no text is refused when it is large or its displayed size is unknown, and needs an explicit acknowledgement when it is small.",
+    "Animated GIF, animated PNG (APNG), animated WebP and multi-page TIFF are refused (only one frame could be read, so another frame could leak). A single-frame GIF is accepted and normalised to PNG.",
+    "Every image in the export is re-encoded as metadata-free PNG: pixels are preserved and EXIF/XMP/ICC/DPI/text metadata is stripped, so file size can grow and an untouched image's bytes change while its pixels do not.",
+    "The image OCR leak search can raise a false alarm when a redacted phrase is a compact prefix of unredacted text in the same image (for example a redacted name next to an e-mail address containing it): the output is withheld rather than released.",
+    "Images in which OCR read no text or only very small text at native resolution (rotated, tiny, low-contrast, handwriting) are reviewer-acknowledged unverified pixels: a WARN check (V112) names them in every export report, but the tool cannot certify or redact text in them. PF131 requires an explicit acknowledgement for small unread images and PF133 for very small text; large unread images are refused.",
+    "Ink evidence is contrast-based (pixel variance inside the engine's word boxes), so an installed-but-dishonest engine that invents words over genuinely textured or noisy pixels is not distinguishable; pure uniform/blank boxes are refused.",    "Tracked changes are refused before export, never resolved; a document with revisions cannot be processed.",
     "Comments are removed entirely, not redacted; their content is never reviewed for detection.",
     "Presentation-only text is copied unchanged and not inspected: style names, list-numbering format text, font names, and most settings/theme values.",
     "A decomposed-Unicode (NFD) form of a name can evade detection: the detectors see the characters as extracted, and no NFC/NFD normalised detection view is built.",
@@ -220,10 +225,12 @@ def _is_comment_part(name: str) -> bool:
 
 
 # ---- the checks ------------------------------------------------------------
-def verify_docx(src, out, needles) -> VerifyReport:
+def verify_docx(src, out, needles, *, image_edits=None, image_needles=None,
+                unverified_images=None, engine_config=None) -> VerifyReport:
     report = VerifyReport(limits=list(DOCX_LIMITS))
     try:
-        _run(report, src, out, needles)
+        _run(report, src, out, needles, image_edits or {}, image_needles or [],
+             unverified_images or [], engine_config)
     except Exception as exc:                      # a checker crash is not a pass
         report.checks.append(Check("V100", "verification completed", FAIL,
                                    f"verifier crashed ({type(exc).__name__}); "
@@ -231,7 +238,8 @@ def verify_docx(src, out, needles) -> VerifyReport:
     return report
 
 
-def _run(report: VerifyReport, src, out, needles) -> None:
+def _run(report: VerifyReport, src, out, needles, image_edits, image_needles,
+         unverified_images, engine_config) -> None:
     add = lambda cid, name, status, detail: report.checks.append(  # noqa: E731
         Check(cid, name, status, detail))
 
@@ -313,13 +321,19 @@ def _run(report: VerifyReport, src, out, needles) -> None:
     _metadata(report, parts, roots, add)
 
     # V106 document structure and untouched parts preserved
-    _structure(report, src_names, src_parts, names, parts, add)
+    _structure(report, src_names, src_parts, names, parts, add, image_edits)
 
     # V107 package integrity
     _integrity(report, names, parts, roots, add)
 
     # V108 part names are structural or generated, never a source-chosen string
     _names(report, names, add)
+
+    # V109-V111 every exported image: canonical mapping, pixels, metadata, OCR leak;
+    # V112 discloses images whose text was never read (WARN, does not withhold).
+    if any(_is_media(name) for name in src_parts) or image_edits:
+        _images(report, src_parts, parts, image_edits, image_needles,
+                unverified_images, engine_config, add)
 
 
 def _containers(report, names, parts, roots, add) -> None:
@@ -442,7 +456,8 @@ def _metadata(report, parts, roots, add) -> None:
             "no thumbnail, no comment-author names")
 
 
-def _structure(report, src_names, src_parts, out_names, parts, add) -> None:
+def _structure(report, src_names, src_parts, out_names, parts, add,
+               image_edits=None) -> None:
     problems = []
     src_text = sorted(n for n in src_parts if TEXT_PART_RE.match(n))
     out_text = sorted(n for n in parts if TEXT_PART_RE.match(n))
@@ -459,16 +474,21 @@ def _structure(report, src_names, src_parts, out_names, parts, add) -> None:
             after = _count_elements(out_roots[name], kind)
             if before != after:
                 problems.append(f"{kind} count changed in a text part: {before} -> {after}")
-    # images and embedded fonts are renamed to neutral names and must survive as
-    # identical content: the bytes must not change, only the part name
-    for is_kind, name_re, label in ((_is_media, MEDIA_NAME_RE, "image"),
-                                    (_is_font, FONT_NAME_RE, "font")):
-        src_payloads = sorted(data for name, data in src_parts.items() if is_kind(name))
-        out_parts = {name: data for name, data in parts.items() if is_kind(name)}
-        if src_payloads != sorted(out_parts.values()):
-            problems.append(f"{label} part content changed or count changed")
-        if any(not name_re.match(name) for name in out_parts):
-            problems.append(f"a {label} part name was not neutralised")
+    # images: every image is re-encoded (metadata-free PNG) and renamed to a
+    # generated canonical name; the bytes no longer have to be identical, so the
+    # pixel-level checks live in V109/V110/V111 below.
+    src_media = {name: data for name, data in src_parts.items() if _is_media(name)}
+    out_media = {name: data for name, data in parts.items() if _is_media(name)}
+    if len(out_media) != len(src_media):
+        problems.append("image count changed (every source image must be re-encoded)")
+    if any(not MEDIA_NAME_RE.match(name) for name in out_media):
+        problems.append("an image part name was not neutralised")
+    src_fonts = sorted(data for name, data in src_parts.items() if _is_font(name))
+    out_fonts = sorted(data for name, data in parts.items() if _is_font(name))
+    if src_fonts != out_fonts:
+        problems.append("font part content changed or count changed")
+    if any(not FONT_NAME_RE.match(name) for name in parts if _is_font(name)):
+        problems.append("a font part name was not neutralised")
     # every part the writer may not edit is byte-identical
     missing, changed, added = [], [], []
     for name, data in src_parts.items():
@@ -493,8 +513,219 @@ def _structure(report, src_names, src_parts, out_names, parts, add) -> None:
     else:
         add("V106", "structure and untouched parts preserved", PASS,
             f"paragraph and run counts unchanged in {len(src_text)} text part(s); "
-            "all images and non-text parts byte-identical")
+            f"{len(out_media)} image(s) preserved with generated names and checked by "
+            "V109/V110/V111; non-text parts byte-identical")
 
+
+def _images(report, src_parts, parts, image_edits, image_needles, unverified_images,
+            engine_config, add) -> None:
+    """V109-V111: every exported image is re-decoded and checked.
+
+    F1: the writer renames image parts canonically (sorted source media part ->
+    ``word/media/redacted_N.png``), so the verifier rebuilds that exact mapping
+    from the source package instead of pairing by pixel dimensions. Two images
+    with equal dimensions therefore pair correctly, while a missing/extra/
+    renamed output image fails closed.
+
+    F4: every image (not only redacted ones) is re-encoded metadata-free PNG by
+    the writer, so an untouched image must decode to the same pixels and V111
+    scans every image for metadata and original bytes.
+
+    F3/F5: multi-frame images never reach this point (pre-flight refuses them);
+    V110 re-reads every output image with the preferred independent reader and
+    fails if an accepted image passage is still readable anywhere.
+    """
+    from ..ocr import OcrError, OcrUnavailable
+    from ..ocr_backends import default_config
+
+    edited = dict(image_edits or {})
+    src_media = {name: data for name, data in src_parts.items() if _is_media(name)}
+    out_media = {name: data for name, data in parts.items() if _is_media(name)}
+
+    # Canonical source->output mapping: the writer's deterministic rule, rebuilt
+    # from the source package alone (never from dimensions).
+    expected: dict[str, str] = {}
+    taken = set(src_parts)
+    counter = 0
+    for src_name in sorted(src_media):
+        counter += 1
+        candidate = f"word/media/redacted_{counter}.png"
+        while candidate in taken:
+            counter += 1
+            candidate = f"word/media/redacted_{counter}.png"
+        taken.add(candidate)
+        expected[src_name] = candidate
+
+    problems: list[str] = []
+    if set(out_media) != set(expected.values()):
+        problems.append("output image parts are not the generated canonical set "
+                        "(missing, extra or not renamed)")
+    src_decoded: dict[str, object] = {}
+    out_decoded: dict[str, object] = {}
+    for src_name, data in src_media.items():
+        try:
+            src_decoded[src_name] = image_tools.decode_image(data)
+        except image_tools.ImageError as exc:
+            problems.append(f"a source image cannot be decoded ({type(exc).__name__})")
+    for src_name, out_name in expected.items():
+        data = out_media.get(out_name)
+        if data is None:
+            continue
+        try:
+            out_decoded[src_name] = image_tools.decode_image(data)
+        except image_tools.ImageError as exc:
+            problems.append(f"an output image cannot be decoded ({type(exc).__name__})")
+    if problems or len(out_decoded) != len(src_media) or len(src_decoded) != len(src_media):
+        detail = ("; ".join(sorted(set(problems))[:4])
+                  or "the output does not contain one decodable image per source image")
+        add("V109", "image export: canonical mapping and pixels", FAIL, detail)
+        add("V110", "image export: OCR leak search", FAIL,
+            "images could not be mapped to the source; no image can be trusted")
+        add("V111", "image export: metadata and original bytes", FAIL,
+            "images could not be mapped to the source; the output is withheld")
+        return
+
+    # V109: same pixel dimensions; edited areas black; untouched images
+    # pixel-identical (metadata re-encode may change bytes, never pixels).
+    pixel_problems: list[str] = []
+    edited_areas = 0
+    for src_name in sorted(src_media):
+        src_pix = src_decoded[src_name]
+        out_pix = out_decoded[src_name]
+        if (src_pix.width, src_pix.height) != (out_pix.width, out_pix.height):
+            pixel_problems.append("an image's pixel dimensions changed")
+            continue
+        rects = list(edited.get(src_name, ()))
+        if rects:
+            edited_areas += len(rects)
+            for rect in rects:
+                if image_tools.bright_fraction(out_pix, rect) > 0.02:
+                    pixel_problems.append("a redacted area is not black in the output pixels")
+                    break
+        elif bytes(src_pix.samples) != bytes(out_pix.samples):
+            pixel_problems.append("an untouched image's pixels changed")
+    if pixel_problems:
+        add("V109", "image export: canonical mapping and pixels", FAIL,
+            "; ".join(sorted(set(pixel_problems))[:3]))
+    else:
+        add("V109", "image export: canonical mapping and pixels", PASS,
+            f"{len(expected)} image(s) matched by canonical name and re-decoded at the "
+            f"same pixel size; {edited_areas} redacted area(s) are black; "
+            "untouched images are pixel-identical")
+
+    # V111: no image metadata and no original image bytes anywhere in the package.
+    metadata_problems: list[str] = []
+    originals = list(src_media.values())
+    for src_name, out_name in expected.items():
+        data = out_media[out_name]
+        for marker in (b"Exif\x00\x00", b"<x:xmpmeta", b"http://ns.adobe.com/xap",
+                       b"pHYs", b"iCCP", b"iTXt"):
+            if marker in data:
+                metadata_problems.append("image metadata survives in the output")
+                break
+        if src_media[src_name] in data:
+            metadata_problems.append("an original image's bytes survive in its output image")
+    for original in originals:
+        if any(original in payload for payload in parts.values()):
+            metadata_problems.append("original image bytes survive somewhere in the package")
+            break
+    if metadata_problems:
+        add("V111", "image export: metadata and original bytes", FAIL,
+            "; ".join(sorted(set(metadata_problems))[:3]))
+    else:
+        add("V111", "image export: metadata and original bytes", PASS,
+            f"no EXIF/XMP/ICC/DPI metadata and no original image bytes in "
+            f"{len(expected)} re-encoded image(s)")
+
+    # V112: disclose images whose pixels were not fully verified for text. Two
+    # cases: OCR read no text at all (unread / OCR not used), and PF133 tiny-text
+    # images where OCR returned words too small to trust (highlighted text may hide
+    # among them). Re-encoded pixels are not a certification of hidden text, so a
+    # PASS must be visibly qualified. WARN only, never withholds.
+    if unverified_images:
+        entries = []
+        for index, width, height, reason in sorted(unverified_images)[:8]:
+            identity = f"image {index} ({width}x{height} px)"
+            if reason == "tiny":
+                entries.append(f"{identity}: text was very small, OCR may have missed "
+                               "it; its pixels were NOT verified for hidden text")
+            elif reason == "unused":
+                entries.append(f"{identity}: text not read (OCR was not used for this "
+                               "export); its pixels were NOT verified for text")
+            else:
+                entries.append(f"{identity}: text not read; its pixels were NOT "
+                               "verified for text")
+        if len(unverified_images) > 8:
+            entries.append(f"and {len(unverified_images) - 8} more")
+        add("V112", "image export: text not read or too small to read reliably / "
+                    "pixels unverified", WARN,
+            f"{len(unverified_images)} image(s) were not fully verified: "
+            + "; ".join(entries) + ". Review every such image yourself.")
+    else:
+        add("V112", "image export: text not read or too small to read reliably / "
+                    "pixels unverified", PASS,
+            f"all {len(expected)} exported image(s) had their text read and none was "
+            "flagged as tiny text")
+
+    # V110: re-read every output image and search for the accepted image passages.
+    if not image_needles:
+        add("V110", "image export: OCR leak search", PASS,
+            "no OCR-derived image passage was accepted; the image pixels and metadata "
+            "were checked, and no OCR run is needed")
+        return
+    config = engine_config or default_config()
+    reader, independent, label = image_tools.verification_reader(config)
+    if reader is None:
+        add("V110", "image export: OCR leak search", FAIL,
+            "no OCR engine is available to re-read the exported images, so the "
+            "output is withheld (fail closed)")
+        return
+    name, version, _available, _error = image_tools.engine_summary(config)
+    report.ocr_engine = {
+        "configured": {"engine": config.spec, "name": name, "version": version,
+                       "local": config.local},
+        "verification_reader": label,
+        "independent": independent,
+    }
+    failures: list[str] = []
+    texts: list[str] = []
+    for src_name in sorted(src_media):
+        out_pix = out_decoded[src_name]
+        try:
+            result = reader.analyze(out_pix.tobytes("png"),
+                                    out_pix.width * 72.0 / image_tools.IMAGE_DPI,
+                                    out_pix.height * 72.0 / image_tools.IMAGE_DPI,
+                                    image_tools.IMAGE_DPI)
+            texts.append(" ".join(word.text for word in result.words))
+        except (OcrError, OcrUnavailable):
+            failures.append("unavailable")
+        except Exception as exc:                  # a broken reader is never a pass
+            failures.append(type(exc).__name__)
+    if failures:
+        add("V110", "image export: OCR leak search", FAIL,
+            f"could not re-read {len(failures)} exported image(s) with {label}; an "
+            "unreadable image is not a pass")
+        return
+    suffix = "" if independent else (" -- SAME-ENGINE cross-check (weakest available; "
+                                     "Tesseract absent, PF130 acknowledged)")
+    if not image_needles:
+        add("V110", "image export: OCR leak search", PASS,
+            f"no OCR-derived image passage was accepted; re-read {len(texts)} image(s) "
+            "for the record" + suffix)
+        return
+    needles_as_pairs = [("IMAGE", needle) for needle in image_needles]
+    full, token = _leaks("\n".join(texts), needles_as_pairs)
+    if full:
+        add("V110", "image export: OCR leak search", FAIL,
+            "an accepted image passage is still readable by OCR in an exported image: "
+            + _fmt(full))
+    elif token:
+        add("V110", "image export: OCR leak search", FAIL,
+            "a fragment of an accepted image passage is still readable by OCR: " + _fmt(token))
+    else:
+        add("V110", "image export: OCR leak search", PASS,
+            f"none of {len(image_needles)} accepted image passage(s) readable by {label} "
+            f"in {len(texts)} exported image(s)" + suffix)
 
 INERT_FIXED_NAMES = {
     "docProps/core.xml", "docProps/app.xml",

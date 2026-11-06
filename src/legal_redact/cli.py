@@ -8,8 +8,15 @@ docs/OCR_BACKENDS.md); a third-party/cloud engine is refused unless the run is
 approved with `--allow-cloud-ocr`, and the verbatim cloud disclaimer is printed
 on stderr and must be acknowledged per file before export.
 
-PDFs and .docx files are both accepted by `inspect`, `suggest` and `redact`.
-The browser review page renders PDF pages, so `review` stays PDF-only.
+PDFs and .docx files are both accepted by `inspect`, `suggest`, `redact` and
+`review`. OCR also reads text inside images embedded in a .docx (with the same
+engine abstraction); a redacted image is repainted in its pixels and verified
+again on export. `--no-ocr` restores the old fail-closed rule that image text is
+not read. The review page for a .docx is rendered through an installed Microsoft
+Word (Windows COM) or LibreOffice when one is found; without a renderer — or when
+the text cannot be aligned to the rendered pages with confidence — it falls back
+to a text review page. The .docx itself is always the source of truth: the
+rendered page is a view only, and export runs the normal writer and verifier.
 """
 from __future__ import annotations
 
@@ -49,12 +56,15 @@ def _pipeline_format(path: str) -> str:
     return "pdf"
 
 
-def _inspect_docx(path: str) -> int:
+def _inspect_docx(path: str, ocr: bool = True,
+                  engine_config: EngineConfig | None = None) -> int:
     from .docx.package import DocxError
     from .docx.pipeline import summary_docx
     from .docx.preflight import blocked as blocked_docx, preflight_docx
-    findings = preflight_docx(path)
+    from .docx.render import detect_renderer, renderer_label
+    findings = preflight_docx(path, ocr=ocr, engine_config=engine_config)
     print("format=docx")
+    print(f"review_page={renderer_label(detect_renderer())}")
     if not blocked_docx(findings):
         try:
             counts = summary_docx(path)
@@ -62,7 +72,14 @@ def _inspect_docx(path: str) -> int:
             pass                       # the findings below say why
         else:
             print(f"text_parts={counts['text_parts']} containers={counts['containers']} "
-                  f"characters={counts['characters']}")
+                  f"characters={counts['characters']} images={counts['media_parts']}")
+            if counts["media_parts"] and ocr and engine_config is not None:
+                from .docx import images as image_tools
+                name, version, available, _error = image_tools.engine_summary(engine_config)
+                status = "available" if available else "unavailable"
+                print(f"image_ocr={status} (engine={name or engine_config.spec} "
+                      f"version={version or 'unknown'} "
+                      f"local={'yes' if engine_config.local else 'no'})")
     for f in findings:
         print(f"{f.severity.value.upper():7} {f.code}: {f.message}")
     if blocked_docx(findings):
@@ -155,13 +172,13 @@ def _inspect(path: str, ocr: bool = True, engine_config: EngineConfig | None = N
 
 
 def _inspect_command(args) -> int:
-    if _pipeline_format(args.pdf) == "docx":
-        return _inspect_docx(args.pdf)
     config = None
     if not args.no_ocr:
         config = _resolve_engine(args)
         if config is None:
             return 2
+    if _pipeline_format(args.pdf) == "docx":
+        return _inspect_docx(args.pdf, ocr=not args.no_ocr, engine_config=config)
     return _inspect(args.pdf, ocr=not args.no_ocr, engine_config=config)
 
 
@@ -191,7 +208,7 @@ def _suggest(args) -> int:
     from .policy import load_policy
     docx = _pipeline_format(args.pdf) == "docx"
     config = None
-    if not docx and not args.no_ocr:
+    if not args.no_ocr:
         config = _resolve_engine(args)
         if config is None:
             return 2
@@ -201,7 +218,8 @@ def _suggest(args) -> int:
     try:
         if docx:
             from .docx.pipeline import suggest_docx as suggest_fn
-            s = suggest_fn(args.pdf, det, load_policy(args.policy))
+            s = suggest_fn(args.pdf, det, load_policy(args.policy),
+                           ocr=not args.no_ocr, engine_config=config)
         else:
             from .pipeline import suggest as suggest_fn
             s = suggest_fn(args.pdf, det, load_policy(args.policy),
@@ -269,13 +287,51 @@ def _h2h(args) -> int:
     return 0
 
 
+def _review_docx(args) -> int:
+    """`legal-redact review file.docx`: rendered review when possible, else text review."""
+    from pathlib import Path
+    from .docx.package import DocxError
+    from .docx.pipeline import load_decisions_docx, suggest_docx
+    from .docx.review import serve_docx
+    from .pipeline import save_decisions
+    from .policy import load_policy
+    dec = args.decisions or str(Path(args.pdf).with_name(Path(args.pdf).name + ".decisions.json"))
+    config = None
+    if not args.no_ocr:
+        config = _resolve_engine(args)
+        if config is None:
+            return 2
+    try:
+        if Path(dec).exists():
+            print(f"Resuming decisions from {dec}")
+            session = load_decisions_docx(args.pdf, dec, ocr=not args.no_ocr,
+                                          engine_config=config)
+        else:
+            det = _detector(args.detector)
+            if det is None:
+                return 2
+            print("Detecting (local models; the first run loads them)...")
+            session = suggest_docx(args.pdf, det, load_policy(args.policy),
+                                   ocr=not args.no_ocr, engine_config=config)
+            save_decisions(session, dec)
+    except (OSError, ValueError, DocxError) as exc:
+        print(f"REFUSE PF104 could not prepare the review session ({type(exc).__name__}).",
+              file=sys.stderr)
+        return 1
+    try:
+        serve_docx(args.pdf, session, dec, args.port, open_browser=not args.no_browser,
+                   engine_config=config, ocr=not args.no_ocr)
+    except (OSError, ValueError) as exc:
+        print(f"REFUSE PF104 the review page could not start ({type(exc).__name__}).",
+              file=sys.stderr)
+        return 1
+    return 0
+
+
 def _review(args) -> int:
     from pathlib import Path
     if _pipeline_format(args.pdf) == "docx":
-        print("The review page renders PDF pages, so it does not support .docx yet.")
-        print("For a .docx file use: legal-redact inspect | suggest | redact, and set each")
-        print('decision\'s "status" to "accepted" or "rejected" in the decisions JSON.')
-        return 2
+        return _review_docx(args)
     from .pipeline import load_decisions, save_decisions, suggest
     from .policy import load_policy
     from .review_server import serve
@@ -310,7 +366,7 @@ def _redact(args) -> int:
     from .pipeline import ExportRefused
     docx = _pipeline_format(args.pdf) == "docx"
     config = None
-    if not docx and not args.no_ocr:
+    if not args.no_ocr:
         config = _resolve_engine(args)
         if config is None:
             return 2
@@ -322,7 +378,8 @@ def _redact(args) -> int:
             from .pipeline import export as export_fn
             from .pipeline import load_decisions as load_fn
         if docx:
-            s = load_fn(args.pdf, args.decisions)
+            s = load_fn(args.pdf, args.decisions, ocr=not args.no_ocr,
+                        engine_config=config)
         else:
             s = load_fn(args.pdf, args.decisions, ocr=not args.no_ocr,
                         engine_config=config)
@@ -343,7 +400,8 @@ def _redact(args) -> int:
             print(f"accepted {added} other occurrence(s) of accepted text")
     try:
         if docx:
-            rep = export_fn(args.pdf, args.out, s)
+            rep = export_fn(args.pdf, args.out, s, ocr=not args.no_ocr,
+                            engine_config=config)
         else:
             rep = export_fn(args.pdf, args.out, s, ocr=not args.no_ocr,
                             engine_config=config)
@@ -356,6 +414,16 @@ def _redact(args) -> int:
         return 1
     print(rep.format())
     print(f"written: {args.out}")
+    if getattr(args, "evidence", None):
+        try:
+            from .evidence import build_evidence, write_evidence
+            evidence = build_evidence(args.pdf, args.out, s, rep)
+            evidence_path = write_evidence(args.evidence, evidence)
+            print(f"evidence: {evidence_path}")
+        except OSError as exc:
+            print(f"WARNING: the redacted file was written but the evidence report could "
+                  f"not be written ({type(exc).__name__}: {exc})", file=sys.stderr)
+            return 1
     return 0
 
 
@@ -366,7 +434,7 @@ def main(argv: list[str] | None = None) -> int:
     ins.add_argument("pdf", help="PDF or .docx file")
     ins.add_argument("--no-ocr", action="store_true",
                      help="do not use OCR; refuse pages without a text layer (old behaviour; "
-                          "no effect on .docx)")
+                          "also disables reading text inside .docx images)")
     _add_ocr_args(ins)
     bn = sub.add_parser("bench", help="run the synthetic benchmark")
     bn.add_argument("--detector", nargs="+", default=["rules"],
@@ -385,7 +453,7 @@ def main(argv: list[str] | None = None) -> int:
     sg.add_argument("--detector", default="ensemble", choices=["ensemble", "rules"])
     sg.add_argument("--no-ocr", action="store_true",
                     help="do not use OCR; refuse pages without a text layer (old behaviour; "
-                         "no effect on .docx)")
+                         "also disables reading text inside .docx images)")
     _add_ocr_args(sg)
     rd = sub.add_parser("redact", help="export a redacted copy after review, then verify it")
     rd.add_argument("pdf", help="PDF or .docx file")
@@ -396,10 +464,11 @@ def main(argv: list[str] | None = None) -> int:
                     help="bulk-accept pending items the policy proposes to redact (review items stay pending)")
     rd.add_argument("--no-ocr", action="store_true",
                     help="do not use OCR; refuse pages without a text layer (old behaviour; "
-                         "no effect on .docx)")
+                         "also disables reading text inside .docx images)")
     _add_ocr_args(rd)
     rv = sub.add_parser("review", help="open the local review page (accept / reject / add boxes, export)")
-    rv.add_argument("pdf", help="PDF file (the review page is PDF-only for now)")
+    rv.add_argument("pdf", help="PDF or .docx file (the .docx page is rendered when Word or "
+                                "LibreOffice is available, otherwise it is a text review)")
     rv.add_argument("--policy", default="counterparty")
     rv.add_argument("--detector", default="ensemble", choices=["ensemble", "rules"])
     rv.add_argument("--decisions", default=None,
@@ -418,6 +487,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="an external tool's results.json (from its own harness); repeatable")
     rd.add_argument("--accept-repeats", action="store_true",
                     help="also accept every other occurrence of text you accepted (explicit bulk action)")
+    rd.add_argument("--evidence", default=None, metavar="PATH",
+                    help="after a successful export, write a compliance evidence report "
+                         "(Markdown; use a .json path for JSON). No document text is included")
     be = sub.add_parser("bench-export", help="run the seeded-leak suite against the export verifier")
     be.add_argument("--n", type=int, default=10, help="documents per template")
     args = ap.parse_args(argv)

@@ -34,7 +34,7 @@ git describe --tags --exact-match HEAD   # expect: v0.3.0
 Confirm the environment (the `.venv` here already has the ML extras and models):
 ```powershell
 .\.venv\Scripts\legal-redact.exe --help
-.\.venv\Scripts\python.exe -m pytest -q   # expect: 234 passed (OCR tests skip without Tesseract)
+.\.venv\Scripts\python.exe -m pytest -q   # expect: 318 passed in this checkout (OCR tests skip without Tesseract; the count grows as tests are added)
 ```
 
 ## B. Fresh clone (published version)
@@ -45,7 +45,7 @@ cd legal-redact-test
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"      # core + dev tools, no model download
-.\.venv\Scripts\python.exe -m pytest -q                    # expect: 234 passed
+.\.venv\Scripts\python.exe -m pytest -q                    # expect: 318 passed in this checkout (grows as tests are added)
 ```
 
 Full detector ensemble (Presidio + GLiNER; needed to test names/addresses; the weights download
@@ -149,17 +149,97 @@ Now open `testdocs\contract.redacted.docx` in **Word** and check:
 - Review → Comments shows none (the comment was removed, not redacted);
 - File → Info shows no author/editor (properties were emptied).
 
-There is no browser review page for `.docx` (the page renders PDF pages); DOCX review is the
-decision file, stated in the docs. Also confirm speed: a short document takes well under a second
-on this machine.
+## 4b. Track C2 — DOCX review page (new in 0.5.0)
+
+With Microsoft Word installed (Windows) or LibreOffice, `review` renders the .docx and draws the
+suggestions on the rendered page:
+
+```powershell
+.\.venv\Scripts\legal-redact.exe review testdocs\contract.docx --policy counterparty
+# terminal: "Review mode: rendered page (word)" (or libreoffice)
+# page images from the render, boxes over each suggestion, manual boxes, acknowledge, export
+```
+
+Check on the page:
+- boxes sit on the right text (compare a box with the same page image as Word shows);
+- a box drawn through half a word is rejected ("the box only partly covers a word");
+- a box around generated-only text (a page number that is not in the .docx model) is rejected
+  ("not part of the .docx text model");
+- Export writes `testdocs\contract.redacted.docx` (not a PDF) and shows V101-V108 PASS;
+- open the exported `.docx` in Word and confirm the `████` blocks; the rendered page is a view and
+  was never redacted.
+
+Force the text fallback (needs no renderer at all):
+
+```powershell
+$env:LEGAL_REDACT_RENDERER = "none"
+.\.venv\Scripts\legal-redact.exe review testdocs\contract.docx --policy counterparty
+# terminal: "Review mode: text review (no page image)"
+# the page lists each suggestion with a short context excerpt; no boxes; export still works
+Remove-Item Env:\LEGAL_REDACT_RENDERER
+```
+
+`inspect testdocs\contract.docx` prints the selected mode: `review_page=rendered (word)`,
+`review_page=rendered (libreoffice)` or `review_page=text`. If the renderer is present but cannot
+render (Protected View, locked file, timeout), the review page says so and uses the text mode; it
+never shows a box that was not mapped.
+
+## 4c. Track C3 — DOCX images: OCR, pixel burn, re-verification (new in 0.5.0)
+
+You need a `.docx` that contains an image with readable text (paste a screenshot of a name/e-mail
+into Word and save it, or use `tests/fixtures` as a starting point). Keep Tesseract installed for
+the default path.
+
+```powershell
+.\.venv\Scripts\legal-redact.exe inspect with_image.docx
+# expect: images=1, image_ocr=available, PF113 "will be read with OCR", PF129 word count
+.\.venv\Scripts\legal-redact.exe suggest with_image.docx -o dec.json --detector rules
+# open dec.json (no document text); accept the image decisions, then:
+.\.venv\Scripts\legal-redact.exe redact with_image.docx --decisions dec.json -o out.docx --ack PF113
+# expect V101-V108 PASS plus V109 (areas black), V110 (re-OCR finds nothing) and, if any image
+# had no text read or was flagged as very small text (PF133), a WARN V112 naming that image
+# (a PASS with an unverified image is qualified; the same row is in the --evidence report)
+```
+
+Check the output image in Word (or unzip `word/media/` and open it): the accepted words are black
+boxes, the pixel size is unchanged, and the image opens normally. Add a second image that the
+detectors find nothing in: it must come out **pixel-identical** but re-encoded as metadata-free PNG
+(the bytes differ). The output media names are `word/media/redacted_N.png` in sorted source order;
+two same-size images must pair correctly, not by dimension guessing.
+
+Fail-closed checks:
+- `--no-ocr`: the image is not read; a small image is PF113 "not read / check every image
+  yourself", a page-sized image is REFUSE PF123; every image is still re-encoded metadata-free.
+- A corrupt image file (replace the media bytes with garbage) is REFUSE PF127; nothing is exported.
+- An animated GIF, APNG, animated WebP or multi-page TIFF must be REFUSE PF127 with no output file
+  (inspect only: the four fixtures in `tests/fixtures/docx_audit/`).
+- An image the engine finds no words in: small -> REVIEW PF131 (must be acknowledged; the finding
+  says its pixels were NOT checked and a WARN V112 names it in the export report); large /
+  content-bearing -> REFUSE PF132. Very small text (a large share of OCR word boxes under ~12 px at
+  native resolution) or an image displayed below ~150 dpi -> REVIEW PF133, and the export report
+  must carry a WARN V112 for that image too (the evidence report shows the same WARN row). A custom
+  engine that returns words on uniform blank pixels -> REFUSE PF128 (contrast-based ink evidence;
+  valid low-contrast text must pass, e.g. `tests/fixtures/docx_audit/I10_low_contrast_text.docx`).
+- `--no-ocr`: every image's text is unread, so the export report must carry a WARN V112 listing
+  every image; the export still passes after the other acknowledgements.
+- A different engine on `redact` than on `suggest` is refused (engine pin, PF022 / clear message):
+  re-run suggest instead.
+- In the review page, an image suggestion is listed as `image 1 (WxH px, K words)` with its OCR
+  context in text review, and has **no box** in rendered review (its rendered position is not
+  guessed). Manual boxes cannot target image pixels.
+- If you unzip the output, none of the original image bytes may appear anywhere; every output image
+  must carry no EXIF/XMP/ICC/DPI/text chunks. If you edit an image to defeat this (e.g. copy the
+  original back, or leave EXIF in), `redact` must refuse with V109/V110/V111 FAILs.
 
 ## 5. Track D — things that must be refused (fail closed)
 
 ```powershell
 .\.venv\Scripts\legal-redact.exe inspect testdocs\contract-tracked.docx
 # expect REFUSE PF105 (tracked changes) — then redact must write nothing
-.\.venv\Scripts\legal-redact.exe inspect testdocs\contract-large-image.docx
-# expect REFUSE PF123 (image covering >=25% of a page; text in pixels cannot be redacted in .docx)
+.\.venv\Scripts\legal-redact.exe inspect testdocs\contract-large-image.docx --no-ocr
+# expect REFUSE PF123 (image covering >=25% of a page with image OCR disabled)
+.\.venv\Scripts\legal-redact.exe redact testdocs\contract-large-image.docx --no-ocr ...
+# a multi-frame image (animated GIF/APNG/WebP, multi-page TIFF) must REFUSE PF127 even with OCR on
 ```
 
 In Word, also make and try: an encrypted copy (File → Info → Protect Document → Encrypt with
@@ -169,9 +249,14 @@ In each case `redact` must exit non-zero and leave no output file.
 ## 6. Track E — regression and honesty checks
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q                 # 234 passed
+.\.venv\Scripts\python.exe -m pytest -q                 # 318 passed in this checkout (grows with docs/tests)
 .\.venv\Scripts\legal-redact.exe bench-export --n 3     # "every injected leak caught" (13/13)
 ```
+
+Add `--evidence testdocs\evidence.md` to any `redact` command to write the compliance evidence
+report: source/redacted SHA-256, policy, decision counts, acknowledged findings, OCR engine/locality,
+every verifier check and the things it does not cover, plus the "not a compliance certificate"
+disclaimer. It contains no document text; see docs/COMPLIANCE.md for what it does and does not prove.
 
 Optional, heavier (needs the ML extras): `legal-redact bench --suite holdout4 --detector ensemble`
 runs the spent home-field suite; `legal-redact bench-h2h --suite indep --work DIR` runs the

@@ -1,0 +1,16 @@
+name = "contract-sharing"
+description = "Sharing a contract with the other side, a bank, an adviser or a counterparty: remove personal identifiers, keep the commercial terms, dates and governing law. Not legal advice; it does not decide whether the disclosure is lawful or whether the document is anonymous afterwards."
+min_confidence = 0.5
+# A lone name detector at 0.85 or above is treated as strong; below that a human decides.
+consensus = ["PERSON"]
+strong_confidence = 0.85
+
+[actions]
+PERSON = "redact"
+EMAIL = "redact"
+PHONE = "redact"
+ADDRESS = "redact"
+ID = "redact"
+IBAN = "redact"
+CARD = "redact"
+DOB = "redact"

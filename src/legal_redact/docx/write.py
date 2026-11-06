@@ -33,7 +33,10 @@ from pathlib import Path
 from lxml import etree
 
 from .extract import (BLOCK, W_SPACE, extract_text, localname, parse_xml)
+from .images import ImageError, reencode_image
 from .package import (CT_NAME, DocxError, read_package, rels_owner, resolve_target)
+
+PNG_CONTENT_TYPE = "image/png"
 
 W = lambda tag: f"{{http://schemas.openxmlformats.org/wordprocessingml/2006/main}}{tag}"  # noqa: E731
 
@@ -152,19 +155,22 @@ def _scrub_settings(root) -> None:
                 element.set(attr, "")
 
 
-def _neutral_renames(layout, names) -> dict[str, str]:
+def _neutral_renames(layout, names, edited_images: set[str] | None = None) -> dict[str, str]:
     """Rename image and embedded-font parts to neutral generated names.
 
     A part name is recoverable text (it sits in the ZIP directory), so an image
     file named after a person would leak the name even though the image is only
     flagged for review. The extension is taken from a fixed allowlist (enforced
-    at pre-flight), never from the producer's own string.
+    at pre-flight), never from the producer's own string. Redacted images are
+    re-encoded as PNG, so their generated name ends in .png.
     """
     renames: dict[str, str] = {}
     taken = set(names)
+    edited = set(edited_images or ())
     counter = 0
     for name in sorted(layout.media_parts):
-        extension = name.rsplit(".", 1)[-1].lower() if "." in name else "bin"
+        extension = "png" if name in edited else (
+            name.rsplit(".", 1)[-1].lower() if "." in name else "bin")
         counter += 1
         candidate = f"word/media/redacted_{counter}.{extension}"
         while candidate in taken:
@@ -184,8 +190,14 @@ def _neutral_renames(layout, names) -> dict[str, str]:
     return renames
 
 
-def _clean_content_types(root, dropped: set[str], renames: dict[str, str]) -> bool:
+def _clean_content_types(root, dropped: set[str], renames: dict[str, str],
+                         png_parts: set[str] | None = None) -> bool:
     changed = False
+    png_parts = png_parts or set()
+    has_png_default = False
+    for element in root:
+        if localname(element.tag) == "Default" and (element.get("Extension") or "").lower() == "png":
+            has_png_default = True
     for element in list(root):
         if localname(element.tag) != "Override":
             continue
@@ -195,7 +207,16 @@ def _clean_content_types(root, dropped: set[str], renames: dict[str, str]) -> bo
             changed = True
         elif part in renames:
             element.set("PartName", "/" + renames[part])
+            if part in png_parts:
+                element.set("ContentType", PNG_CONTENT_TYPE)
             changed = True
+    if png_parts and not has_png_default:
+        namespace = root.nsmap.get(None) or ""
+        tag = f"{{{namespace}}}Default" if namespace else "Default"
+        default = etree.SubElement(root, tag)
+        default.set("Extension", "png")
+        default.set("ContentType", PNG_CONTENT_TYPE)
+        changed = True
     return changed
 
 
@@ -253,20 +274,43 @@ def _serialise(original: bytes, root) -> bytes:
 
 
 # ---- the writer ------------------------------------------------------------
-def redact_docx(src: str | Path, out: str | Path, spans) -> None:
-    """Write `out` with the spans removed. `spans` is [(container_page, start, end)]."""
+def redact_docx(src: str | Path, out: str | Path, spans, image_edits=None) -> None:
+    """Write `out` with the spans removed.
+
+    `spans` is [(container_page, start, end)] over the .docx text containers.
+    `image_edits` maps a source image part name to pixel rectangles that must be
+    burned black in that image; those images are re-encoded as PNG, renamed to a
+    neutral generated name, and the original bytes are never written.
+    """
     from .preflight import blocked, preflight_docx
 
     src, out = Path(src).resolve(), Path(out).resolve()
     if src == out:
         raise DocxError("refusing to overwrite the source file")
-    findings = preflight_docx(src)
+    findings = preflight_docx(src, image_scan=False)
     if blocked(findings):
         raise DocxError("the input is refused by pre-flight; nothing was written")
     package = read_package(src)
     layout = package.layout
     if layout.unknown_parts or layout.macro_parts or layout.embedded_parts:
         raise DocxError("the input has parts this writer cannot process")
+
+    # F4: EVERY image is decoded and re-encoded as metadata-free PNG (pixels
+    # preserved; accepted spans burnt first). The original bytes never reach the
+    # output, so untouched images keep their pixels but lose EXIF/XMP/ICC/DPI.
+    image_edits = dict(image_edits or {})
+    unknown = set(image_edits) - set(layout.media_parts)
+    if unknown:
+        raise DocxError("an image to redact is not a recognised image part (source changed?)")
+    edited_images: dict[str, bytes] = {}
+    for part_name in sorted(layout.media_parts):
+        if part_name not in package.parts:
+            raise DocxError("a recognised image part is missing from the package")
+        try:
+            edited_images[part_name] = reencode_image(package.parts[part_name],
+                                                      image_edits.get(part_name, ()))
+        except ImageError as exc:
+            raise DocxError(f"an image could not be re-encoded safely: {exc}") from exc
 
     docx_text = extract_text(package)
     by_page: dict[int, list[tuple[int, int]]] = {}
@@ -287,8 +331,8 @@ def redact_docx(src: str | Path, out: str | Path, spans) -> None:
 
     dropped = layout.dropped_parts()
     surviving = set(package.names) - dropped
-    renames = _neutral_renames(layout, package.names)
-    edited: dict[str, bytes] = {}
+    renames = _neutral_renames(layout, package.names, set(edited_images))
+    edited: dict[str, bytes] = dict(edited_images)
 
     for part in layout.text_parts:
         root = docx_text.roots[part]
@@ -309,7 +353,7 @@ def redact_docx(src: str | Path, out: str | Path, spans) -> None:
         edited[SETTINGS] = _serialise(package.parts[SETTINGS], root)
 
     root = parse_xml(package.parts[CT_NAME])
-    if _clean_content_types(root, dropped, renames):
+    if _clean_content_types(root, dropped, renames, set(edited_images)):
         edited[CT_NAME] = _serialise(package.parts[CT_NAME], root)
 
     for rels_name in layout.rels_parts:

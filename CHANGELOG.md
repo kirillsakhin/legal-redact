@@ -1,5 +1,131 @@
 # Changelog
 
+## 0.5.0 (2026-11-06)
+
+DOCX review page and DOCX image redaction. `legal-redact review file.docx` now opens the same local
+review page as PDF: rendered through an installed Microsoft Word (Windows COM) or LibreOffice when
+one is found, with detector suggestions drawn where the aligned text appears; a text review
+otherwise. Text inside images embedded in a `.docx` is now read with the same OCR engine abstraction
+as scanned PDFs, redacted in the pixels and re-verified. The `.docx` stays the source of truth — the
+rendered PDF is a view, never the exported file.
+
+- New `docx/render.py`: optional page renderer, detected and never installed. Microsoft Word via a
+  PowerShell COM script (invisible, read-only open, macros force-disabled, link updates off,
+  `ExportAsFixedFormat`, always closed/quit; a PID sweep kills only the Word instance the render
+  started, so a user's open Word is never quit), preferred on Windows; LibreOffice
+  (`soffice --headless --convert-to pdf`) with a unique throwaway user profile otherwise. 120 s
+  timeout (`LEGAL_REDACT_RENDER_TIMEOUT`), temporary profile/output directories removed, output
+  validated as a readable PDF. `inspect` prints `review_page=rendered (word|libreoffice)|text`.
+- New `docx/align.py`: fail-closed token-level alignment between the .docx text model and the
+  rendered PDF. Per-container monotone anchoring on tokens unique on both sides, local sequence
+  matching between anchors, NFKC/casefold token equality and a neighbour-context requirement.
+  Rendered mode is used only when ≥90% of the .docx text aligns and every suggestion maps cleanly;
+  otherwise the page falls back to text review rather than draw a box that might be the wrong text.
+  Manual boxes map back only when they fully contain whole words that are contiguous in one
+  container and the span maps forward again; partial, mixed-part, non-contiguous, page-number-only
+  and unmapped boxes are rejected with a clear message.
+- New `docx/review.py`: `DocxReviewApp` implements the same HTTP surface as the PDF review app for
+  the .docx pipeline (state, decide, acknowledge, bulk accept, manual boxes, page images, export)
+  and `serve_docx` wires it to the existing token-authenticated local server. `review` on a `.docx`
+  runs the normal pre-flight/suggest (or resumes a decision file), renders+aligns once, and
+  explicitly falls back to text review when there is no renderer, rendering fails, or alignment is
+  not trustworthy. Export from the page calls the existing `export_docx` writer + V101-V108 verifier
+  and shows its report; the rendered PDF is never modified. Text review lists suggestions with short
+  in-memory context excerpts (never written to decisions/reports/logs) plus accept/reject, bulk
+  accept, acknowledgement and export controls; manual boxes require rendered mode.
+- Review page HTML: mode banner, per-suggestion box list with page numbers (a .docx decision can
+  appear on a different rendered page than its container index), text-mode context excerpts, hidden
+  draw/repeats controls where unavailable. PDF review markup/behaviour unchanged (defaults keep the
+  old path).
+- CLI: `review` accepts `.docx` (dispatch to the docx backend); `inspect` reports the review-page
+  mode and `images=`/`image_ocr=` for embedded images; help/docstrings updated. `--accept-repeats`
+  remains PDF-only (noted/ignored for .docx); `--ocr-engine`/`--ocr-command`/`--ocr-local`/
+  `--allow-cloud-ocr` now also select the reader for .docx images; `--accept-proposed`, `--ack`,
+  `--port`, `--no-browser`, `--decisions` work for both.
+- New `docx/images.py`: embedded images are decoded with PyMuPDF (no new dependency), bounded
+  (pixels/bytes/frames), and read as extra text containers with the configured OCR engine at a
+  300-dpi geometry convention (image pixels -> page points -> engine normalised boxes -> pixel word
+  boxes). Without an engine, or with `--no-ocr`, no image text is read (small image REVIEW,
+  page-sized REFUSE) but every image is still decoded and re-encoded. Unsupported/undecodable/
+  oversized images are REFUSE PF127; an engine failure is REFUSE PF128; PF129 reports OCR counts
+  and rotation reports without text; PF130 requires an acknowledgement when no independent output
+  reader exists (Tesseract absent); a non-local engine keeps the double cloud gate (run approval +
+  per-file PF019).
+- Multi-frame refusal (audit F2/F5): animated GIF, APNG, animated WebP and multi-page TIFF are
+  detected from the raw bytes **before** any decode (stdlib GIF image-descriptor parser, PNG `acTL`
+  chunk, RIFF `ANIM`/`ANMF` + VP8X animation flag, TIFF page count) and REFUSED (PF127); a container
+  whose frame count cannot be established is refused too. A single-frame GIF is accepted and
+  normalised to PNG. This closes the leak where PyMuPDF decoded one frame, another frame kept the
+  PII and the export passed.
+- Unread images are fail-closed (audit F3): an image in which the engine finds no words is REFUSED
+  when large/content-bearing (PF132) and needs an explicit acknowledgement when small (PF131); an
+  image displayed below ~150 dpi is a REVIEW (PF133); engine word boxes that do not overlap actual
+  ink in the source pixels refuse the file (PF128, pixel evidence independent of the engine).
+  Export re-reads **all** source images and withholds the file if an accepted image passage is still
+  readable in another image; V110 now re-reads every exported image, not only redacted ones.
+- Canonical image pairing (audit F1): the writer renames image parts deterministically (sorted
+  source order -> `word/media/redacted_N.png`) and the verifier rebuilds that exact source->output
+  pairing from the source package instead of matching by pixel dimensions — two (or more) images of
+  equal size now export PASS, while a count/name/tamper mismatch fails closed (V109).
+- Metadata-free images everywhere (audit F4): **every** image in an export is re-encoded as
+  lossless PNG with its pixels preserved and EXIF/XMP/ICC/DPI/text chunks stripped, not only images
+  with accepted spans. An untouched image is therefore pixel-identical, not byte-identical; V111
+  scans every output image for metadata and original bytes.
+- Unread-image disclosure (audit round 2, R1): a small image the engine read no text in is REVIEW
+  PF131 whose text now says its pixels were **NOT** checked by the export verifier and personal data
+  may survive, and every export report carries a **WARN V112** naming each image that was not fully
+  verified — text never read (or OCR not used at all) **or text too small to read reliably (the same
+  PF133 tiny-text condition)** — with honest per-image wording; the same WARN row is in the
+  `--evidence` report. The PASS stays possible but is visibly qualified.
+  Very small text is a REVIEW PF133 even when the engine returned (misread) words: an image whose
+  OCR word boxes are mostly under ~12 px at native resolution must be acknowledged before export,
+  and its export report carries the V112 WARN.
+  Ink evidence is now contrast/variance-based instead of absolute darkness: valid low-contrast glyphs
+  count as ink (audit `I10` low-contrast text exports cleanly again), while uniform/blank boxes an
+  engine hallucinated words over are still REFUSE PF128.
+- Tests: 75 new. `tests/test_docx_review.py` (26) with a committed synthetic, Word-rendered
+  `tests/fixtures/docx_review/contract.{docx,pdf}` so alignment runs on CI without Word or
+  LibreOffice: renderer detection/labels, LibreOffice command/profile/timeout/failure handling,
+  alignment mapping/word identity/reverse round-trip and fail-closed rejections, rendered HTTP
+  round-trip with a mocked renderer (V101-V108 PASS, text-free API/decisions), manual-box mapping and
+  export, text fallback (contexts in memory only; export works; unacknowledged findings block it),
+  blocked pre-flight skipping the renderer, CLI dispatch/inspect, HTML mode markers.
+  `tests/test_docx_images.py` (25) runs without Tesseract/Word/LibreOffice: the honest fake command
+  engine drives suggesting/burning/re-verification, covering scan/decode and geometry, every refuse
+  path, `--no-ocr`, pre-flight disclosure counts, image decisions and engine pinning, an end-to-end
+  export whose pixels are black and whose original bytes are gone (V109-V111 PASS), untouched-image
+  pixel identity, refusal without OCR / with another engine / without a pin, no-burn and
+  leftover-EXIF mutations withheld, text and rendered review integration, cloud/same-engine
+  acknowledgements, CLI plumb-through, and one real-Tesseract test skipped where Tesseract is absent.
+  `tests/test_docx_image_hardening.py` (24) turns the independent-audit corpus findings F1-F5 and the
+  round-2 residuals into regressions using the auditor's synthetic fixtures
+  (`tests/fixtures/docx_audit/`): frame parsers and the four multi-frame `.docx` fixtures refused
+  with no output, single-frame GIF accepted, zero-word large refused, zero-word small and low-res
+  acknowledged, dishonest-engine ink evidence, cross-image leak refused at export and by V110, two
+  same-size images paired canonically, count tamper failing V109, untouched metadata image re-encoded
+  metadata-free with pixel equality, PNG tEXt/pHYs stripping, edited+untouched re-encode, the
+  low-contrast `I10` fixture exporting PASS with contrast-based ink while uniform blanks still
+  refuse, tiny-text `I22` going through PF133, the strengthened PF131 wording, V112 naming unread
+  images (including with OCR not used), and a contrast-ink unit test. Full suite 318 passed with the
+  existing PDF/OCR tests unchanged.
+- GDPR positioning (with the compliance scope): purpose presets `contract-sharing`,
+  `dsar-disclosure` and `publication` (schema-valid, every category stated, strictness ordering
+  tested; each description says what it does not decide), a new `docs/COMPLIANCE.md` mapping
+  GDPR-relevant redaction tasks to what the tool does and an explicit "not a compliance product"
+  section (redaction is not anonymisation; no legal-basis, DPIA, records-of-processing or DSR
+  workflow; special categories and indirect identifiers remain human calls), and a README
+  positioning box with the correct way to describe the tool. `redact --evidence PATH` (Markdown, or
+  JSON with a `.json` path) now writes a compliance evidence report after a successful export:
+  source/redacted sizes and sha256, policy, decision counts by status and category, acknowledged
+  pre-flight findings, OCR engine/version/locality, every verifier check and limit, and the explicit
+  "not a compliance certificate" disclaimer — with no document text in the report. 4 new tests.
+- Docs: `docs/DOCX.md` review-page section (rendered vs text, requirements, fail-closed alignment,
+  manual boxes, renderer privacy/temp files, measured timings) and image section (OCR/geometry,
+  refuse codes, writer burn, V109-V111, engine pinning, image review labels, limits/timings); README
+  supported-formats row and pipeline table, DOCX usage/limitations/security, OCR install note;
+  `docs/TESTING.md` Track C2 (review) and C3 (images) with forced-text/`--no-ocr`/engine-mismatch
+  procedures; `docs/THREAT_MODEL.md` T37-T44 and the v0.5 scope. No version bump.
+
 ## 0.4.1 (2026-11-06)
 
 Test-only fix for CI. One new test (	est_inspect_reports_default_engine) assumed a local
