@@ -292,3 +292,8 @@ them, and create a new one when a change set has been scored. The OCR configurat
 (what was adopted, what was rejected, and why) is in
 [docs/OCR_EVALUATION.md](docs/OCR_EVALUATION.md); the `.docx` design note, refusals and known gaps
 are in [docs/DOCX.md](docs/DOCX.md).
+
+To try the tool without any real documents, follow [docs/TESTING.md](docs/TESTING.md):
+`scripts/make_test_documents.py` writes synthetic PDF and `.docx` fixtures with planted personal
+data and protected lookalikes, and `scripts/check_planted_values.py` checks a redacted output for
+them (text layer, OCR for rasterised pages, and every `.docx` package part).
