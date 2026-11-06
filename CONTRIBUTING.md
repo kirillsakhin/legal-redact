@@ -10,10 +10,12 @@ Thanks for looking. This is a small, pre-alpha project with strict honesty rules
   test, and a claim in the README needs a benchmark or test behind it.
 - **A guard you cannot make fail is not a guard.** New verifier checks need a seeded-leak injector
   in `bench/export_suite.py` that the check catches, and a clean export it must not reject.
-- **Held-out suites are read-only.** `FROZEN_SHA256`, `HOLDOUT_SHA256` and `HOLDOUT4_SHA256` pin
-  them; a test fails if the generator changes. Do not tune on them. When a change set has been
-  scored on one, it is spent: add a new suite with new names, seeds and at least one new template,
-  pin its hash before scoring anything, and say so in `docs/BENCHMARKS.md`.
+- **Held-out suites are read-only.** `FROZEN_SHA256`, `HOLDOUT_SHA256`, `HOLDOUT4_SHA256` and
+  `INDEP_SHA256` (the independent-data v5 suite) pin them; a test fails if the generator changes.
+  Do not tune on them. When a change set has been scored on one, it is spent: add a new suite —
+  for the synthetic ones, with new names, seeds and at least one new template; for the independent
+  one, with new source excerpts and a new injection seed — pin its hash before scoring anything, and
+  say so in `docs/BENCHMARKS.md`.
 - Reports, logs and decision files must never contain document text. There are tests for this;
   keep them passing.
 

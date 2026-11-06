@@ -5,26 +5,29 @@
 Review-first redaction of personal data in PDF contracts, with independent checks of the
 exported file. Local and offline by default.
 
-> **Status: pre-alpha (0.0.1).** Developed and tested on synthetic documents only. Not tested on
-> real documents. It does not make legal determinations, and removing personal data is not
-> anonymisation or GDPR compliance.
+> **Status: pre-alpha (0.2.0).** Developed and tested on synthetic documents and public contract
+> text; not tested on real client documents. It does not make legal determinations, and removing
+> personal data is not anonymisation or GDPR compliance.
 
 A lawyer opens a short English, text-based PDF contract, picks a disclosure purpose (a policy),
 reviews what the tool suggests and why, and exports a separate redacted copy. The model
 recommends; the lawyer decides. Drawing a black box over text is not redaction, so the export
 removes the content and then checks the result with different libraries than the ones that
-wrote it.
+wrote it. Scanned pages with no text layer are read with local English OCR into the same word
+model, so the same review flow works; they are exported as re-rasterised images with the
+redaction burnt into the pixels.
 
 ## How it works
 
 | Stage | What happens | Module |
 |---|---|---|
-| 1. Extract | Text and word coordinates, so a text span maps back to boxes on the page. | `extract.py` |
-| 0. Pre-flight | Refuses encrypted files, scans, attachments and XFA forms; flags images, annotations, forms, scripts, layers. | `preflight.py` |
+| 1. Extract | Text and word coordinates, so a text span maps back to boxes on the page. Pages with no usable text layer are OCR'd instead (same word/offset/box model). | `extract.py` |
+| 1b. OCR | Only for pages with no (or almost no) text layer: the local Tesseract engine reads the page image (grayscale) into the same model. A page that already has a text layer is never OCR'd. Pages rotated 90/180 degrees are detected with Tesseract OSD and re-read upright, with every box mapped back to the original page. | `ocr.py` |
+| 0. Pre-flight | Refuses encrypted files, attachments and XFA forms, and refuses scans when OCR is unavailable or disabled; otherwise flags OCR use and what OCR cannot see, plus images, annotations, forms, scripts, layers. | `preflight.py` |
 | 2. Detect | Rules for structured identifiers (IBAN and card checksums), Presidio, and GLiNER, merged by an ensemble with conflict resolution. | `detect/` |
 | 3. Decide | A policy (TOML) says redact, keep or review per category; the review gate blocks export until every suggestion has a decision. | `policy.py`, `review.py`, `review_server.py` |
-| 4. Remove | Applies redactions (text under each box is deleted), scrubs metadata, annotations, attachments, scripts, bookmarks and hidden text, writes a fresh file. | `redact.py` |
-| 5. Verify | Re-reads the output with pdfminer.six, pypdfium2 and pikepdf; withholds the file if a leak is found. | `verify.py` |
+| 4. Remove | Applies redactions (text under each box is deleted), scrubs metadata, annotations, attachments, scripts, bookmarks and hidden text, writes a fresh file. Scanned pages are re-rasterised at 300 dpi and the boxes are burnt into the pixel data, then rebuilt as image-only pages. | `redact.py` |
+| 5. Verify | Re-reads the output with pdfminer.six, pypdfium2 and pikepdf; for rebuilt image pages it also OCRs the output, checks there is no text layer and that the boxes are black in the page image itself; withholds the file if a leak is found. | `verify.py` |
 
 Reports and decision files contain categories, page numbers, boxes and counts, never document text.
 
@@ -51,6 +54,13 @@ The first run downloads model weights from Hugging Face; after that the models a
 The benchmarks ran on an RTX 5090 laptop GPU. CPU speed and speed on large files are untested.
 The tool's own code makes no network calls; with the weights cached, the ensemble ran with `HF_HUB_OFFLINE=1` in the author's environment (one machine, one run).
 
+OCR for scanned pages is an external program, not a Python dependency: install Tesseract 5.x with
+the `eng` and `osd` language data (the `osd` data is used to detect and correct rotated pages) and
+put it on PATH, or point `TESSERACT_CMD` at the executable. `legal-redact inspect` reports whether
+it was found. Without it, pages with no text layer are refused exactly as before. OCR runs locally
+and offline; its output is cached nowhere. The measured comparison of OCR configurations and an
+alternative engine (RapidOCR) is in [docs/OCR_EVALUATION.md](docs/OCR_EVALUATION.md).
+
 ## Use
 
 Review page (recommended):
@@ -73,6 +83,9 @@ legal-redact suggest contract.pdf -o decisions.json --policy counterparty
 legal-redact redact contract.pdf --decisions decisions.json -o contract.redacted.pdf
 ```
 
+Scanned pages are OCR'd automatically where needed. `--no-ocr` (on `inspect`, `suggest`, `redact`
+and `review`) turns OCR off and restores the old fail-closed refusal of pages without a text layer.
+
 Policies live in `src/legal_redact/policies/*.toml` (`counterparty` and `auditor` are illustrative,
 not legal advice). Pass your own with `--policy path/to/policy.toml`.
 
@@ -81,33 +94,37 @@ not legal advice). Pass your own with `--policy path/to/policy.toml`.
 Two independent text extractions; characters inside each redaction box; metadata and XMP; hidden
 containers (attachments, scripts, forms, bookmarks, annotations, thumbnails); a raw scan of every
 decoded PDF object; old revisions; images; collateral word loss; whether boxes render dark; page
-integrity; layout shift.
+integrity; layout shift. For a page rebuilt as an image (a scan) it additionally checks that no text
+layer survived, that there is exactly one full-page image and the boxes are black in that image's
+pixel data (not just painted on top), that OCR of the output cannot read the strings you chose to
+redact, and that the text that should have survived is still readable.
 
 A pass means "no leak found by these checks". It does not mean the document is safe. Not covered:
-text turned into images or outlines, text under images (no OCR), unusual font encodings, digital
-signatures (redaction invalidates them), and indirect identification (a job title plus a company
-can identify someone). Every report lists these.
+text turned into images or outlines on a page that has a text layer, text under images on text pages,
+unusual font encodings, digital signatures (redaction invalidates them), and indirect identification
+(a job title plus a company can identify someone). For OCR'd pages, a character Tesseract misreads is
+invisible to both the detectors and the export check, and handwriting, stamps, signatures and photos
+are not read at all. Every report lists these.
 
 ## Results, briefly
 
-On synthetic documents, with a hash-pinned held-out suite (175 documents) that nothing was tuned on:
+**Independent-data suite (100 documents, third-party CUAD contract text, PII injected
+independently, hash-pinned).** Where the tool released a file it left no readable personal string:
+0 of 60 documents (95% CI 0-6%), and it damaged none of the planted protected decoys. The blind
+"accept every suggestion" flow withheld 40 of 100 rather than release a file whose accepted text
+was still readable elsewhere — the fail-closed behaviour working, caused on this data by company
+names labelled as persons. The best other tool on the same data, a Presidio reference pipeline,
+leaked in 8% of documents and destroyed 31.6% of the protected decoys; doc_redaction 2.8.1's batch
+output leaked in 100% (26% judged only on the categories it exposes) and over-redacted 11% of
+protected text in its extended configuration; two regex tools leaked in 100%. Full table,
+scope-restricted rows and caveats: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
-- The ensemble left 2% of documents with at least one undetected span (95% interval 1 to 5%),
-  against 49% for the best single model and 100% for Presidio alone (which has no address or
-  date-of-birth recognizer). Names: precision 0.96, recall 1.00.
-- A review queue of about one item per document remains, and 4.5% of legally important text is
-  still touched by suggestions. With the queue ignored, 51% of documents would leak.
-- The export verifier caught 195 of 195 deliberately leaky exports across 13 leak routes and wrongly
-  failed 0 of 15 clean ones.
-
-Run in batch mode on the same suite, every other open-source tool we could drive left far more:
-doc_redaction 2.8.1 left 86–100% of documents with a readable personal string (56% on the
-categories it supports with email excluded), a Presidio reference pipeline 49%, and two
-regex-only tools 100%. Ours left 1% when every suggestion is accepted. That is still a
-home-field result — the documents and formats are ours, and the others got no tuning — and it
-costs over-redaction: our suggestions touch 4.5% of protected text, between doc_redaction's two
-configurations. On a third-party rendering-condition benchmark (pdfredeval) the tool fails closed
-rather than release a leaky export, as documented in `docs/BENCHMARKS.md`.
+**Home-field suite (175 synthetic documents, kept as the protocol record).** The ensemble left 2% of
+documents with at least one undetected span, against 49% for the best single model. The 0.2.0
+quality pass cut protected-text damage from 4.5% to 0.0% on that suite and the review queue from
+0.90 to 0.59 items per document; those are diagnostics, not validation, because the pass was
+designed from that suite's failures. The export verifier caught 195 of 195 deliberately leaky
+exports across 13 leak routes and wrongly failed 0 of 15 clean ones.
 
 These numbers say how the pieces behave under a controlled protocol. They are not evidence about
 real contracts. The protocol, the failed attempts (an organisation-name veto made things worse),
@@ -115,21 +132,44 @@ the caveats and the open problems are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md
 
 ## Limitations
 
-- English, text-based, short PDF contracts. No scans or OCR, no DOCX, no other languages.
-- Not tested: real documents, multi-page, multi-column, tabular or form-like layouts, hyphenated
-  line ends, non-Latin scripts.
+- English text-based PDF contracts and English printed scans (OCR). No DOCX, no other languages.
+  Handwriting, signatures, stamps and photographs are not detected; pre-flight flags every OCR page
+  for a human look and says a name OCR cannot read cannot be redacted.
+- Scans that are sideways or upside down cost one extra OCR pass: pre-flight runs Tesseract's
+  orientation detector on every page it will OCR (about 0.4 s per scanned page), and a page whose
+  orientation cannot be determined is a REVIEW finding (PF018), never a silent guess. A detected
+  rotation is corrected and also surfaced for review (PF017).
+- Rasterised scan pages are rebuilt as images: they are not searchable or text-selectable, and their
+  output size follows the source scan, not the text. On a synthetic one-page contract, a 198 KB
+  300 dpi JPEG scan became a 193 KB lossless output page, while the text PDF of the same content is
+  2.9 KB. Rasterisation also costs one OCR pass per page on review and one on export (about
+  0.5-0.7 s per page on this machine, measured, plus about 8.7 MB per page while the 300 dpi
+  grayscale image is in memory; a rotated page needs a second pass and takes about 1.6 s).
+- OCR is a guess: an error cuts both ways. A name it misreads cannot be redacted (surfaced at
+  pre-flight), and an error in the output check could hide a leak or, more often, raise a false
+  alarm (a fragment of a redacted name is refused on image pages). See `docs/THREAT_MODEL.md` and
+  the measured OCR comparison in `docs/OCR_EVALUATION.md`.
+- Not tested: real documents, multi-column, tabular or form-like layouts, hyphenated line ends,
+  non-Latin scripts, heavy skew and handwriting.
 - Text laid out vertically or stacked one glyph per line is not reconstructed as a name. On an
   independent benchmark this left 4 of 27 planted copies behind, and the export was withheld
   rather than released.
 - Detectors can miss personal data; the verifier checks that what you decided to redact is gone, not
   that you decided to redact everything. Read every page.
 - Redactions at the very start of a line can shift the following text; the verifier warns.
-- Contract dates are sometimes mistaken for dates of birth (suggestions you can reject).
-- Compared only against the open-source tools that run as batch programs, on our own synthetic
-  suite (doc_redaction 2.8.1, ltillmann/pdf-redactor, JoshData/pdf-redactor, and a Presidio
-  reference pipeline). An independent third-party benchmark was attempted, but its rendering-
-  condition pages are outside this tool's declared scope and it refused to release a leaky export
-  instead of producing a score. Commercial tools and LLM-based redaction are unmeasured.
+- A date of birth is only proposed when a birth keyword ("born", "date of birth", "DOB") sits on
+  the date's own line or within a short window; a DOB value printed far from its keyword is missed.
+- A person name adjacent to a company designator (Ltd, LLP, Studio, Partners, GmbH, ...) is treated
+  as part of the firm and not proposed. Conversely, a company name with no designator can still be
+  labelled a person: on the independent-data suite that made the verifier withhold 40 of 100 blind
+  batch exports rather than release a file whose accepted text recurred elsewhere, and accepting
+  those suggestions over-redacts the company name. The review queue is where this is caught.
+- Compared against the open-source tools that run as batch programs, on two suites: a home-field
+  synthetic suite (doc_redaction 2.8.1, ltillmann/pdf-redactor, JoshData/pdf-redactor, a Presidio
+  reference pipeline) and an independent-data suite built on public CUAD contract text with
+  independently injected PII (same tools). A third-party rendering-condition benchmark (pdfredeval)
+  was attempted; its pages are outside this tool's declared scope and it refused to release rather
+  than produce a score. Commercial tools and LLM-based redaction are unmeasured.
 
 ## Security and privacy
 
@@ -161,14 +201,17 @@ empty shims kept only so the 1.x to 2.x upgrade is safe, and carry no licence of
 | GLiNER (code) | Apache-2.0 |
 | GLiNER weights used: `knowledgator/gliner-pii-base-v1.0`, `urchade/gliner_multi_pii-v1` | Apache-2.0 (per the Hugging Face model cards; check before redistributing) |
 | PyTorch | BSD-style |
+| Tesseract OCR (optional external program, not linked or redistributed) | Apache-2.0 |
 | `pymupdf4llm`, `pymupdf_layout` (empty shims installed automatically with PyMuPDF 2.1) | No licence declared: they contain metadata only, no code. The 4LLM and Layout code they replace ships inside PyMuPDF itself: AGPL-3.0 or Artifex commercial |
 
 ## Development
 
 ```
-pytest                                   # 85 tests, core dependencies only
+pytest                                   # 151 tests, core dependencies only; OCR tests skip without Tesseract
 legal-redact bench-export --n 15         # can the verifier actually fail?
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Held-out benchmark suites are hash-pinned: do not tune on
-them, and create a new one when a change set has been scored.
+them, and create a new one when a change set has been scored. The OCR configuration comparison
+(what was adopted, what was rejected, and why) is in
+[docs/OCR_EVALUATION.md](docs/OCR_EVALUATION.md).

@@ -11,16 +11,19 @@ controlled, reproducible protocol, and where they fail.
 | dev | 4 templates (nda, services, loan, lease), written together with the rules. Leave-template-out evaluation. | Used for building. Scores flatter the rules (circular: same author for generator and regexes). |
 | v2 "frozen" | 4 new templates, wrapped paragraphs, names from many origins, foreign address/IBAN/ID formats. Hash-pinned. | Scored once, failures read, fixes made. Post-fix numbers are **contaminated**. |
 | v3 "holdout" | 150 docs: new names, new seeds, 2 new templates. Hash-pinned before scoring. | Scored once for change set 1. Now read. |
-| v4 "holdout4" | 175 docs: new names, new seeds, 1 new template. Hash-pinned before scoring. | Scored once for change set 2. Now read: the next change set needs a v5. |
+| v4 "holdout4" | 175 docs: new names, new seeds, 1 new template. Hash-pinned before scoring. | Scored once for change set 2. Read: it cannot judge later changes, so a v5 was built. |
+| v5 "indep" | 100 docs on **third-party contract text** (CUAD v1, CC BY 4.0; 20 excerpts x 5 variants) with independently injected PII and protected decoys, rendered with a neutral layout. Hash-pinned before scoring (`INDEP_SHA256`). Provenance: `bench/INDEP_NOTICE.md`. | Scored once for the quality change set (2026-11-06). The text is not ours; the layout still is. |
 
 Rules that keep the numbers honest:
 
 1. A suite is pinned by a SHA-256 of its generated text and labels (`FROZEN_SHA256`,
-   `HOLDOUT_SHA256`, `HOLDOUT4_SHA256`). A test fails if the generator changes.
+   `HOLDOUT_SHA256`, `HOLDOUT4_SHA256`, `INDEP_SHA256`). A test fails if the generator changes.
 2. Nothing is tuned on a held-out suite. Model thresholds are fitted on the dev corpus only.
 3. Once a suite's failures have been read, it can no longer judge changes made in response.
 4. Documents go through the real pipeline: render to PDF, reopen, extract. If extraction does
    not reproduce the generator's text, the run stops.
+5. v5 removes one of v4's weaknesses (its text is third-party) but not all: its layout, the PII
+   values and the injection pattern are ours, and the decoys are not real client data.
 
 Metric definitions: a gold span is a **leak** if any of its characters is not covered by the
 union of all predicted spans. A **document leak** is one with at least one leaked span.
@@ -29,6 +32,10 @@ law) overlapped by any prediction. Per-category precision and recall use overlap
 same category; "strict" means identical boundaries.
 
 ## Detector results
+
+**Historical: change set 2 on the v4 home-field suite (spent).** The DOB precision problem in this
+table was fixed in 0.2.0 by requiring birth-keyword evidence; that fix is judged on the
+independent-data v5 section below, not here. The table is kept as the protocol record.
 
 ### Change set 2 on holdout v4 (175 documents)
 
@@ -93,20 +100,76 @@ Last run (15 documents): 0 of 15 clean exports wrongly failed; 195 of 195 leaky 
 caught, each by the check designed for it. Layout-shift warnings on clean exports: 3 of 15.
 This covers the routes we thought of; it cannot show that no other route exists.
 
+Scanned pages (added in 0.2.0) are checked by four further routes on a page that was rebuilt as
+an image: no text layer may survive (V13), the redaction boxes must be dark in the extracted page
+image rather than painted on top (V14), OCR of the output must not recover the strings the user
+chose to redact (V15), and text that should have survived must still be readable (V16). These
+guards are exercised by unit-level mutations rather than `bench-export`: a copy-without-redaction
+writer and under-covering boxes are both refused, and a clean synthetic scan passes all 16
+checks. The image-page injector is not part of `bench-export` yet — a known gap, because the
+guard tests live in `tests/test_ocr.py` rather than in the seeded suite.
+
 Findings from building it: the first geometry check flagged every clean export (it counted
 neighbouring glyph boxes), and fixing that exposed a real writer defect (MuPDF loses the width of
 the first glyph it removes, so following text slides left under the box). Both are fixed; see
 `verify.py` and `redact.py`.
+
+## Scanned PDFs (OCR)
+
+Added in 0.2.0. A page with no usable text layer is rendered in greyscale at 300 dpi and read with
+the local Tesseract engine (`ocr.py`), which produces the same word/offset/box model as the text
+extractor, so detection, review and redaction work unchanged. Pages that already carry a text layer
+are never OCR'd. Tesseract's orientation detector runs on every page to be OCR'd: a sideways or
+upside-down page is re-read upright with every box mapped back to the original page coordinates
+(`PF017` REVIEW), and an undeterminable orientation is `PF018` REVIEW — never a silent mis-read.
+Pre-flight turns the old refusal into REVIEW when Tesseract and its `eng`/`osd` data are available,
+and keeps the refusal with `--no-ocr` or without Tesseract.
+
+Export for such a page is not a text edit: the page is re-rendered at 300 dpi, the redaction boxes
+are burnt into the pixel data, and the page is rebuilt as a single lossless image. The verifier
+then checks there is no text layer, that the boxes are dark in the extracted image, that OCR of the
+output cannot recover the redacted strings, and that content which should have survived is still
+readable.
+
+The OCR configuration was measured on 16 synthetic fixtures (clean and degraded renders plus
+90/180/270-degree rotations) with nine planted values and truth boxes; `docs/OCR_EVALUATION.md`
+records the full table and the decisions. The shipped configuration (greyscale, 300 dpi, OSD
+correction) read 9/9 planted values on the clean page, an average of 8.58/9 on the degraded pages,
+and 9/9 on each rotated page (the previous RGB configuration read 0/9 on 90- and 180-degree pages).
+Timing: 0.43-0.47 s per clean page, 0.66-0.70 s per degraded page, about 1.6 s for a rotated page
+that needs a second pass, and about 8.7 MB of image per page in memory. A 198 KB JPEG scan became a
+193 KB lossless image page, against 2.9 KB for the same content as a text PDF.
+
+Two alternatives were measured and rejected, with numbers: RapidOCR (Apache-2.0) read the same
+clean page and slightly better on heavy blur, but was 5-6x slower, added about 160 MB of
+dependencies, and could not map boxes back on rotated pages; mild contrast stretching made hard-blur
+recall worse; an adaptive second pass gained nothing and mean confidence was not a sound trigger.
+Cloud or vision-model OCR is rejected by design: a hallucinated string makes "did we remove it?"
+verification meaningless.
+
+The guard tests live in `tests/test_ocr.py` and `tests/test_ocr_orientation.py`: a clean synthetic
+scan passes all 16 checks; a copy-without-redaction writer and under-covering boxes are refused with
+the output withheld; disabling orientation correction drops the same rotated scan to <=1/9 planted
+values and forcing an undeterminable orientation produces `PF018` REVIEW; a missing-Tesseract or
+`--no-ocr` path refuses the scan pre-flight and writes nothing. Known gaps: English printed text
+only; rasterised pages are not searchable; a name OCR misreads cannot be redacted (surfaced at
+pre-flight); text inside images on a page that has its own text layer is still not detected; heavy
+skew and handwriting are not handled. See `docs/THREAT_MODEL.md` T14-T18.
 
 ## Not measured
 
 - Real documents of any kind. Human reviewers (the reviewer error rates are simulated).
 - Commercial tools, LLM-based redaction, TypeSafe Jev and AutoTrust JEV-9B. Other open-source
   tools are compared separately below.
-- Hyphenated line ends, multi-page and tabular layouts, columns, non-Latin scripts, scans.
-- Open on v4: contract dates are sometimes labelled dates of birth (DOB precision 0.60), the
-  likely cause of the remaining protected-text damage (not confirmed); ID span boundaries differ
-  from the labels (strict recall 0.79).
+- Real client email domains: the `.test` domain in the synthetic suites is an artefact that
+  penalises Presidio-based tools (see the email note below).
+- Scanned pages against a real degraded-scan corpus: OCR is tested on synthetic renders at
+  100-300 dpi, not on client scans.
+- Hyphenated line ends, multi-page and tabular layouts, columns, non-Latin scripts, rotated scans,
+  handwriting, signatures and stamps.
+- Historical (v4, change set 2): contract dates sometimes labelled dates of birth (DOB precision
+  0.60) and ID span boundaries differ from the labels (strict recall 0.79). The DOB issue was
+  fixed in 0.2.0 by requiring birth-keyword evidence; the fix is judged on v5, not on v4.
 
 ## Reproduce
 
@@ -114,12 +177,103 @@ the first glyph it removes, so following text slides left under the box). Both a
 legal-redact bench --n 30 --detector rules presidio-lg gliner-kn ensemble
 legal-redact bench --suite holdout4 --detector rules presidio-lg gliner-kn ens+resolve+lg ensemble
 legal-redact bench-export --n 15
+legal-redact bench-h2h --suite indep --work WORK --external "label=results.json"   # independent data
+pytest                            # includes the independent-suite pin and the OCR guards
 ```
 
 Detector arms other than `rules` need the `ml` extra and the models (see the README). GPU is
-optional. Scores can differ slightly between machines and library versions.
+optional. Scores can differ slightly between machines and library versions. The v5 harnesses for
+the external tools are in `scripts/` (see the comparison section below).
+
+## Independent-data comparison (holdout v5)
+
+The comparisons further down are home-field: our generator wrote the text. Holdout v5 replaces the
+text with third-party material — 20 contract excerpts from **CUAD v1** (The Atticus Project,
+CC BY 4.0; the underlying documents are public U.S. SEC filings), 20 contract types, five variants
+each, one US-Letter page per document, rendered by a separate neutral layout. PII is injected by a
+separate `faker`-seeded generator (`bench/indep.py`), never by the v4 templates: 10 personal-data
+spans and 10 protected decoys per document (amounts, dates, party names, governing law, section
+references). Provenance, per-excerpt SHA-256 and the licence are in `bench/INDEP_NOTICE.md`; the
+suite is pinned by `INDEP_SHA256`, created before the 0.2.0 change set and scored once on it.
+
+**What v5 fixes and what it does not.** The contract text is not ours. The layout, the injected
+PII and the decoys still are; every document is one page, and CUAD's excerpts are older U.S.
+commercial contracts. It is better than v4, not independent of us.
+
+### Results (100 documents, independent-data v5)
+
+| Tool and configuration | Docs | Docs with a readable personal string (95% CI) | Protected text lost |
+|---|---|---|---|
+| control: unredacted source | 100/100 | 100% (96-100) | 0.0% |
+| control: oracle export | 100/100 | 0% (0-4) | 0.0% |
+| **legal-redact, accept every suggestion** | **60/100 released** | **0% (0-6)** among released; 40 withheld by the verifier | 0.0% |
+| legal-redact, accept every suggestion + repeats | 100/100 released | 0% (0-4) | 0.0% |
+| legal-redact, auto-proposed only | 60/100 released | 3% (1-11); 40 withheld | 0.0% |
+| legal-redact, auto-proposed only + repeats | 100/100 released | 2% (1-7) | 0.0% |
+| doc_redaction 2.8.1, shipped defaults | 100/100 | 100% (96-100) | 0.0% |
+| doc_redaction 2.8.1, + IBAN, card, location | 100/100 | 100% (96-100) | 11.0% |
+| ltillmann/pdf-redactor, all detectors | 100/100 | 100% (96-100) | 34.4% |
+| JoshData/pdf-redactor, example filters | 100/100 | 100% (96-100) | 0.0% |
+| Presidio reference pipeline (our glue) | 100/100 | 8% (4-15) | 31.6% |
+
+Two rows need reading before the others:
+
+- **The blind accept-all flow released 60 of 100 and withheld 40**, by design: its own verifier
+  found accepted PERSON strings still readable elsewhere in the same contract and refused to
+  release the file. Every one of the 40 was a PERSON string. The cause is the failure mode a
+  human reviewer would catch in one click: the model called real company names in the CUAD text
+  (bare names without a legal-form designator) a person, and those names recur in the contract.
+  The verifier cannot tell a real leak from a mislabelled company, so it fails closed. That is the
+  safety property working, and also an honest limitation: the firm-name guard only catches
+  organisations that carry a designator.
+- **The "+ repeats" flow releases all 100**, but the 170 proposals it added were repeats of those
+  same false positives (0 of them real personal data, 0 touching a protected decoy). It reaches a
+  full release by removing the recurring company names everywhere — over-redacting text the decoy
+  metric does not count. Treat that row as the release envelope of the documented bulk flow, not
+  as a clean score; in the intended review workflow a person rejects those suggestions and the
+  file exports.
+
+Restricted to the categories each tool exposes (a document leaks only if a string of one of those
+leaked):
+
+| Categories | legal-redact (accept all) | the other tool |
+|---|---|---|
+| PERSON, EMAIL, PHONE, ADDRESS | 0% (0-6), 60 released | doc_redaction, shipped defaults: 26% (18-35) |
+| + IBAN, CARD | 0% (0-6), 60 released | doc_redaction, extended: 11% (6-19) |
+| EMAIL, PHONE, IBAN | 0% (0-6), 60 released | ltillmann/pdf-redactor: 72% (63-80) |
+| ID only | 0% (0-6), 60 released | JoshData/pdf-redactor: 100% (96-100) |
+| PERSON, EMAIL, PHONE, ADDRESS, CARD, IBAN, ID | 0% (0-6), 60 released | Presidio reference: 8% (4-15) |
+
+### What this shows, and what it does not
+
+- **The leak rate is not close.** Where our tool released a file it left no readable personal
+  string (0 of 60, 95% CI 0-6%), and it damaged none of the protected decoys. The best other tool
+  on this data, a Presidio reference pipeline, leaked in 8% of documents and destroyed 31.6% of the
+  protected decoys; doc_redaction's batch output leaked in 100% (26% judged only on the categories
+  it exposes) and over-redacted 11% of protected text in its extended configuration; the two regex
+  tools leaked in 100%.
+- **It also shows our failure mode plainly.** Blind acceptance is not the product's intended
+  workflow, and on third-party text it withholds 40% of documents because a company name was
+  labelled a person. A reviewer clicking through the queue resolves that; the benchmark cannot
+  model the click.
+- **The decoy metric is narrow.** It counts the ten protected spans injected per document; it does
+  not measure over-redaction of the rest of the contract text, which is exactly where the
+  "+ repeats" row pays. A full over-redaction metric on original text is future work.
+- **One page, 100 documents, synthetic PII, layout ours.** Confidence intervals are wide (0-6%),
+  and CUAD is U.S. commercial contract text from an earlier era. This is evidence, not a product
+  claim about real client contracts.
+
+Reproduce: `legal-redact bench-h2h --suite indep --work WORK --external "label=results.json"` with
+the harnesses in `scripts/` (doc_redaction, ltillmann, JoshData, Presidio reference); v5 is
+regenerated deterministically by `bench/indep.py` and pinned by `INDEP_SHA256`.
 
 ## Comparison with other open-source tools
+
+**Status: historical, change set 2 (home-field).** The text in this suite was written by our own
+generator. After the 0.2.0 quality pass its numbers on this spent suite moved (protected loss
+4.5% -> 0.0%, review queue 0.90 -> 0.59 mean), but a suite whose failures were read cannot judge the
+changes made in response; the independent-data section above is the current comparison. The numbers
+below are kept as the protocol record.
 
 We ran every tool that could be driven as a batch program over the same pinned 175-document
 suite (holdout v4). Each tool was given the source PDFs and nothing else; every output PDF was
@@ -291,8 +445,13 @@ builds needles the same way the real export does. The corrected numbers are in t
 The review page and `legal-redact redact --accept-repeats` can propose every other occurrence of text
 you accepted (case-insensitive, whitespace-flexible, word boundaries; skips text you also rejected
 and anything already covered). It is unit-tested, including line-wrapped occurrences and a guard
-test that fails when the word-boundary check is removed. **It added nothing on this benchmark**
-(0 proposals in every arm): the ensemble already redacts every occurrence in these documents, and
-in the auto-only arm the remaining occurrences were rejected on purpose. So there is no
-benchmark evidence yet that it helps; it targets a case (inconsistent detection of repeats) these
-synthetic documents do not produce.
+test that fails when the word-boundary check is removed.
+
+On the synthetic v4 suite it added nothing (0 proposals in every arm): the ensemble already redacts
+every occurrence there. On the independent-data v5 suite it matters: it added 170 proposals across
+the 40 documents the blind accept-all flow had to withhold, and the "+ repeats" rows are the only
+way that bulk flow releases all 100. But every one of those 170 additions repeated a model false
+positive (a company name labelled PERSON), 0 of them real personal data — so repeats raise the
+release rate by over-redacting, not by finding missed PII. In the intended workflow the reviewer
+rejects those suggestions instead. This is exactly the kind of result a benchmark cannot show and
+the review page can.
