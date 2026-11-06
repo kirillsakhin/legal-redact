@@ -5,6 +5,13 @@ spans with scores. We (a) chunk long pages by lines so nothing is silently
 truncated, (b) map GLiNER labels to our categories, and (c) keep every span
 above a LOW floor so the threshold can be tuned later on training templates
 only (see `fit`), never on the held-out one.
+
+All views of a document go to the model in ONE batched call (GLiNER's inference
+accepts a list of texts). This is the same work as calling it once per view, but
+it removes most of the per-call overhead; it does not change which spans are
+found. Scores can differ in their last few digits from one-call-at-a-time
+inference (measured max 2e-5), so a span sitting exactly on a threshold could in
+principle move; nothing on the dev or holdout suites is that close.
 """
 from __future__ import annotations
 
@@ -76,21 +83,35 @@ class GlinerDetector:
         self.labels = {**LABELS, **(VETO_LABELS if veto else {})}
 
     def _raw(self, pages: Sequence[PageText]) -> list[Suggestion]:
+        """Every view of every page in one batched model call, then map back.
+
+        The flat view and the decapitalised view are independent inputs, so the
+        batch is one array of strings; result i belongs to jobs[i]. Batching all
+        pages of a document keeps the model busy with no padding between pages
+        (each text is padded on its own inside the batch).
+        """
         model, best = _model(self.model_name), {}
-        for p in pages:
+        labels = list(self.labels)
+        jobs = []                                     # (page index, char offset, chunk text)
+        for i, p in enumerate(pages):
             views = [flatten(p.text)]
             alt = decapitalise(views[0])
             if alt:
-                views.append(alt)             # second look at ALL-CAPS names
+                views.append(alt)                     # second look at ALL-CAPS names
             for view in views:
-                for off, chunk in chunks(view):
-                    for ent in model.predict_entities(chunk, list(self.labels), threshold=FLOOR):
-                        s, e = _trim(p.text, off + ent["start"], off + ent["end"])
-                        if e <= s:
-                            continue
-                        key = (p.page, s, e, self.labels[ent["label"]])
-                        if key not in best or ent["score"] > best[key][0]:
-                            best[key] = (float(ent["score"]), ent["label"])
+                jobs.extend((i, off, chunk) for off, chunk in chunks(view))
+        if not jobs:
+            return []
+        results = model.inference([chunk for _, _, chunk in jobs], labels, threshold=FLOOR)
+        for (i, off, _), entities in zip(jobs, results):
+            p = pages[i]
+            for ent in entities:
+                s, e = _trim(p.text, off + ent["start"], off + ent["end"])
+                if e <= s:
+                    continue
+                key = (p.page, s, e, self.labels[ent["label"]])
+                if key not in best or ent["score"] > best[key][0]:
+                    best[key] = (float(ent["score"]), ent["label"])
         return [Suggestion(pg, s, e, cat,
                            f"Model labelled this '{lab}' (score {sc:.2f}).", sc, self.name)
                 for (pg, s, e, cat), (sc, lab) in best.items()]

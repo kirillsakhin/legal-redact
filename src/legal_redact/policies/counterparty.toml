@@ -1,8 +1,11 @@
 name = "counterparty"
 description = "Illustrative: sharing a contract with the other side. Remove every personal identifier."
 min_confidence = 0.5
+# A lone name detector at 0.85 or above is treated as strong: 0.85 is Presidio's
+# usual score for a clean single-detector name, so a 0.9 bar sent almost every
+# such name to review. A lone name detector below 0.85 still needs a human.
 consensus = ["PERSON"]
-strong_confidence = 0.9
+strong_confidence = 0.85
 
 [actions]
 PERSON = "redact"

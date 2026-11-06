@@ -39,6 +39,7 @@ class PageText:
     height: float
     text: str
     words: list[Word] = field(default_factory=list)
+    ocr: bool = False  # True when the text came from OCR of the page image, not a text layer
 
     def locate(self, start: int, end: int) -> list[Rect]:
         """Rectangles covering text[start:end], one per line.

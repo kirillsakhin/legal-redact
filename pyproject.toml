@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "legal-redact"
-version = "0.0.1"
+version = "0.2.0"
 description = "Local, review-first PDF redaction for lawyers, with independent export checks."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -20,7 +20,7 @@ classifiers = [
 dependencies = ["pymupdf>=2.1,<3", "pdfminer.six", "pypdfium2", "pikepdf"]
 
 [project.optional-dependencies]
-dev = ["pytest", "reportlab"]
+dev = ["pytest", "reportlab", "faker"]
 ml = ["gliner", "presidio-analyzer", "spacy", "torch"]
 
 [project.scripts]
@@ -33,4 +33,4 @@ where = ["src"]
 testpaths = ["tests"]
 
 [tool.setuptools.package-data]
-legal_redact = ["policies/*.toml", "web/*.html", "bench/*SHA256"]
+legal_redact = ["policies/*.toml", "web/*.html", "bench/*SHA256", "bench/*.json", "bench/*.md"]

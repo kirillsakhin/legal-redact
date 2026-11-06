@@ -17,6 +17,7 @@ and indirect identification are outside every check here. See LIMITS.
 """
 from __future__ import annotations
 
+import math
 import re
 import unicodedata
 from collections import Counter
@@ -28,8 +29,9 @@ import pymupdf
 PASS, FAIL, WARN, NOT_CHECKED = "PASS", "FAIL", "WARN", "NOT_CHECKED"
 
 LIMITS = [
-    "Text rendered as images or vector outlines cannot be read by any extractor used here.",
-    "Images are not inspected (no OCR); any image is reported for manual review.",
+    "Text rendered as images or vector outlines on a page that HAS a text layer cannot be read by any extractor used here.",
+    "Images on text pages are not inspected (no OCR of pictures inside a text page); any image is reported for manual review.",
+    "Scanned pages are read by local English OCR: a character it misreads is invisible to both detection and this export check.",
     "A negative text search proves absence only for the extractors and encodings tried.",
     "Literal byte search cannot see text inside font-encoded page content; extraction checks cover that.",
     "Indirect identification (job title, rare facts, context) is a human judgment, not checked.",
@@ -98,25 +100,42 @@ def needles_from_source(src: str | Path, boxes, categories: list[str]) -> list[t
     return out
 
 
-def needles_from_groups(src: str | Path, groups) -> list[tuple[str, str]]:
+def needles_from_groups(src: str | Path, groups, pages=None,
+                        raster_pages=frozenset()) -> list[tuple[str, str]]:
     """One needle per redacted passage, however many lines it spans.
 
     `groups` is [(category, [(page, rect), ...]), ...]: the boxes of one decision together.
     Judging each line of a wrapped name separately turns a surname into a stand-alone needle
     that then matches the same word in kept text (a firm name, say) and refuses a correct export.
+
+    For boxes on TEXT pages the words under the box are read from the source PDF as before.
+    For boxes on RASTER (scanned) pages there are no source words to read, so the OCR page text
+    from stage 1b (`pages`, when given) supplies them: that is the text the user chose to redact.
     """
-    doc = pymupdf.open(src)
-    out = []
-    for cat, boxes in groups:
-        words = []
-        for pno, r in boxes:
-            words += [w for w in doc[pno].get_text("words", sort=True)
-                      if r[0] <= (w[0] + w[2]) / 2 <= r[2] and r[1] <= (w[1] + w[3]) / 2 <= r[3]]
-        txt = " ".join(w[4] for w in words)
-        if txt.strip():
-            out.append((cat, txt))
-    doc.close()
-    return out
+    by_num = {p.page: p for p in (pages or [])}
+    text_pages = any(pno not in raster_pages for _, boxes in groups for pno, _ in boxes)
+    doc = pymupdf.open(src) if text_pages else None
+    try:
+        out = []
+        for cat, boxes in groups:
+            words: list[str] = []
+            for pno, r in boxes:
+                if pno in raster_pages:
+                    page_text = by_num.get(pno)
+                    if page_text is not None:
+                        words += [w.text for w in page_text.words
+                                  if r[0] <= (w.rect.x0 + w.rect.x1) / 2 <= r[2]
+                                  and r[1] <= (w.rect.y0 + w.rect.y1) / 2 <= r[3]]
+                elif doc is not None:
+                    words += [w[4] for w in doc[pno].get_text("words", sort=True)
+                              if r[0] <= (w[0] + w[2]) / 2 <= r[2] and r[1] <= (w[1] + w[3]) / 2 <= r[3]]
+            txt = " ".join(words)
+            if txt.strip():
+                out.append((cat, txt))
+        return out
+    finally:
+        if doc is not None:
+            doc.close()
 
 
 # ---- readers (independent of the writer) -----------------------------------
@@ -151,7 +170,15 @@ def _leaks(page_texts: list[str], needles) -> tuple[Counter, Counter]:
 
 
 # ---- the checks ------------------------------------------------------------
-def verify_export(src, out, boxes, needles) -> VerifyReport:
+def verify_export(src, out, boxes, needles, *, raster_pages=frozenset(),
+                  raster_needles=(), source_pages=None) -> VerifyReport:
+    """Check the exported file. `raster_pages` are pages rebuilt as images (scans).
+
+    `raster_needles` is the subset of needles whose boxes live on raster pages:
+    those pages have no text layer, so the leak check for them is OCR of the
+    OUTPUT image. `source_pages` (the stage-1b extraction of the source) is
+    optional and only used to warn about content lost by rasterisation.
+    """
     rep = VerifyReport()
     add = lambda i, n, s, d: rep.checks.append(Check(i, n, s, d))  # noqa: E731
 
@@ -171,13 +198,14 @@ def verify_export(src, out, boxes, needles) -> VerifyReport:
             add(cid, name, PASS, f"none of {len(needles)} redacted passages found")
 
     _geometry(rep, out, boxes, needles)
-    _structure(rep, out)
+    _structure(rep, out, raster_pages)
     _raw_scan(rep, out, needles)
     _revisions(rep, out)
     _collateral(rep, src, out, needles)
     _visual(rep, out, boxes)
     _integrity(rep, src, out)
     _layout_shift(rep, src, out, boxes)
+    _raster(rep, out, boxes, raster_pages, raster_needles, source_pages)
     return rep
 
 
@@ -254,7 +282,7 @@ def _geometry(rep, out, boxes, needles):
                                 f"{len(boxes)} box(es) empty of text"))
 
 
-def _structure(rep, out):
+def _structure(rep, out, raster_pages=frozenset()):
     import pikepdf
     add = lambda i, n, s, d: rep.checks.append(Check(i, n, s, d))  # noqa: E731
     pdf = pikepdf.open(out)
@@ -275,20 +303,32 @@ def _structure(rep, out):
         problems.append("bookmarks")
     if "/OCProperties" in root:
         warns.append("optional-content layers")
-    annots = thumbs = images = 0
-    for p in pdf.pages:
+    annots = thumbs = 0
+    uninspected_images = raster_images = 0
+    for pno, p in enumerate(pdf.pages):
         annots += len(p.get("/Annots", []))
         thumbs += "/Thumb" in p
         for _, xo in p.get("/Resources", {}).get("/XObject", {}).items():
-            images += xo.get("/Subtype") == "/Image"
+            if xo.get("/Subtype") == "/Image":
+                if pno in raster_pages:
+                    raster_images += 1          # rebuilt pages: the image IS the page, checked by V13-V16
+                else:
+                    uninspected_images += 1
     if annots:
         problems.append(f"{annots} annotation(s)/link(s)")
     if thumbs:
         problems.append("page thumbnails")
     add("V05", "hidden containers", FAIL if problems else (WARN if warns else PASS),
         "; ".join(problems + warns) if problems or warns else "no attachments, scripts, forms, bookmarks, annotations or thumbnails")
-    add("V08", "images", WARN if images else PASS,
-        f"{images} image(s) present; contents not inspected, review manually" if images else "no images")
+    if raster_images:
+        add("V08", "images", PASS if not uninspected_images else WARN,
+            f"{raster_images} raster page image(s) checked by the OCR checks"
+            + (f"; {uninspected_images} image(s) on text pages are not inspected, review manually"
+               if uninspected_images else ""))
+    else:
+        add("V08", "images", WARN if uninspected_images else PASS,
+            f"{uninspected_images} image(s) present; contents not inspected, review manually"
+            if uninspected_images else "no images")
     pdf.close()
 
 
@@ -371,3 +411,221 @@ def _integrity(rep, src, out):
         for i in range(a.page_count))
     rep.checks.append(Check("V11", "page count and size", PASS if same else FAIL,
                             "unchanged" if same else "page count or size differs from the source"))
+
+
+# ---- raster (OCR'd / scanned) pages ----------------------------------------
+def _raster(rep, out, boxes, raster_pages, raster_needles, source_pages):
+    if not raster_pages:
+        return
+    _raster_text_layer(rep, out, raster_pages)
+    _raster_image_data(rep, out, boxes, raster_pages)
+    _raster_ocr(rep, out, boxes, raster_pages, raster_needles, source_pages)
+
+
+def _bright_fraction(pix: pymupdf.Pixmap, x0: int, y0: int, x1: int, y1: int,
+                     above: int = 100) -> float:
+    """Share of sampled pixels brighter than `above` in a pixel rectangle.
+
+    A burnt-in black box is 0 (lossless image, integer pixel bounds). Any part
+    of the original scan left uncovered -- a shifted box, a box too small, a
+    vector rectangle drawn over the untouched image -- shows paper/background
+    pixels above the threshold. Counting bright pixels is far more sensitive to
+    a small under-cover than a region mean, which a mostly-black box can dilute.
+    """
+    n = pix.n
+    comps = 1 if n < 3 else 3
+    samples = pix.samples
+    stride_x = max(1, (x1 - x0) // 40)
+    stride_y = max(1, (y1 - y0) // 20)
+    bright = count = 0
+    for y in range(y0, y1, stride_y):
+        row = y * pix.width * n
+        for x in range(x0, x1, stride_x):
+            base = row + x * n
+            if comps == 1:
+                v = samples[base]
+            else:
+                v = (samples[base] + samples[base + 1] + samples[base + 2]) / 3
+            bright += v > above
+            count += 1
+    return bright / count if count else 1.0
+
+
+def _raster_text_layer(rep, out, raster_pages):
+    """V13: a rebuilt page must carry no text layer at all (independent readers)."""
+    import pypdfium2 as pdfium
+    from pdfminer.high_level import extract_text
+    survivors, reader_failures = [], []
+    doc = pymupdf.open(out)
+    pdf = pdfium.PdfDocument(str(out))
+    try:
+        for pno in sorted(raster_pages):
+            if pno >= doc.page_count or pno >= len(pdf):
+                survivors.append(pno + 1)
+                continue
+            mu = doc[pno].get_text().strip()
+            fu = pdf[pno].get_textpage().get_text_range().strip()
+            try:
+                mi = extract_text(str(out), page_numbers=[pno]).strip()
+            except Exception as exc:
+                reader_failures.append(f"p{pno + 1}:{type(exc).__name__}")
+                mi = ""
+            if mu or fu or mi:
+                survivors.append(pno + 1)
+    finally:
+        doc.close()
+        pdf.close()
+    if reader_failures:
+        rep.checks.append(Check("V13", "raster pages: no text layer", FAIL,
+                                "could not read output page(s) with pdfminer ("
+                                + ", ".join(reader_failures[:3]) + "); an unreadable output is not a pass"))
+    elif survivors:
+        rep.checks.append(Check("V13", "raster pages: no text layer", FAIL,
+                                f"text layer survived on page(s) {survivors}: the original text was not removed"))
+    else:
+        rep.checks.append(Check("V13", "raster pages: no text layer", PASS,
+                                f"none of {len(raster_pages)} rebuilt page(s) has extractable text"))
+
+
+def _raster_image_data(rep, out, boxes, raster_pages):
+    """V14: the boxes must be black IN THE PAGE IMAGE, not just drawn on top of it.
+
+    Extract the image XObject of each rebuilt page and measure the pixels under
+    every redaction box. A writer that inserted the original scan and painted
+    vector rectangles over it would render black (V10 would pass) while the
+    original pixels stayed recoverable by deleting the rectangles; this check
+    fails that writer. Exactly one full-page image per rebuilt page is required:
+    an original image plus a separate overlay image is not a redaction either.
+    """
+    doc = pymupdf.open(out)
+    problems, light, checked = [], 0, 0
+    try:
+        for pno in sorted(raster_pages):
+            if pno >= doc.page_count:
+                problems.append(f"page {pno + 1}: missing from output")
+                continue
+            page = doc[pno]
+            page_boxes = [r for p, r in boxes if p == pno]
+            checked += len(page_boxes)
+            images = page.get_images(full=True)
+            if len(images) != 1:
+                problems.append(f"page {pno + 1}: {len(images)} images (expected one rebuilt page image)")
+                continue
+            xref = images[0][0]
+            rects = page.get_image_rects(xref)
+            area = page.rect.width * page.rect.height
+            covered = sum(max(0.0, min(page.rect.x1, r.x1) - max(page.rect.x0, r.x0))
+                          * max(0.0, min(page.rect.y1, r.y1) - max(page.rect.y0, r.y0))
+                          for r in rects)
+            if not area or covered / area < 0.95:
+                problems.append(f"page {pno + 1}: page image covers {covered / area:.0%} of the page")
+                continue
+            pix = pymupdf.Pixmap(doc, xref)
+            sx = pix.width / page.rect.width if page.rect.width else 1.0
+            sy = pix.height / page.rect.height if page.rect.height else 1.0
+            for r in page_boxes:
+                ix0 = max(0, math.floor((r[0] - page.rect.x0) * sx))
+                iy0 = max(0, math.floor((r[1] - page.rect.y0) * sy))
+                ix1 = min(pix.width, math.ceil((r[2] - page.rect.x0) * sx))
+                iy1 = min(pix.height, math.ceil((r[3] - page.rect.y0) * sy))
+                if ix1 <= ix0 or iy1 <= iy0:
+                    continue
+                if _bright_fraction(pix, ix0, iy0, ix1, iy1) > 0.02:
+                    light += 1
+    finally:
+        doc.close()
+    if problems:
+        rep.checks.append(Check("V14", "raster pages: boxes burnt into image", FAIL,
+                                "; ".join(problems[:3])))
+    elif light:
+        rep.checks.append(Check("V14", "raster pages: boxes burnt into image", FAIL,
+                                f"{light} of {checked} box(es) are not dark in the page image: "
+                                "the original pixels under them are still recoverable"))
+    else:
+        rep.checks.append(Check("V14", "raster pages: boxes burnt into image", PASS,
+                                f"{checked} box(es) dark in the rebuilt page image"))
+
+
+def _raster_ocr(rep, out, boxes, raster_pages, raster_needles, source_pages):
+    """V15: OCR the OUTPUT image and search for the redacted strings.
+
+    For an image page this is the real leak check: if OCR can still read a
+    string the lawyer chose to redact, a human can too. Fragments of a redacted
+    person name are FAIL here (not the WARN used for text pages): an image page
+    cannot be "mostly redacted", and a half-covered name is a readable half-name.
+
+    V16 is the other half: the content that should have SURVIVED should still be
+    readable after rasterisation (a blank or truncated rebuilt page is a data-loss
+    bug; it is warned, not failed, because it is not a leak).
+    """
+    from .ocr import OcrError, OcrUnavailable, ocr_available, ocr_page
+    if not ocr_available():
+        rep.checks.append(Check("V15", "raster pages: OCR leak search", FAIL,
+                                "Tesseract is unavailable, so rebuilt image pages cannot be "
+                                "checked; the output is withheld (fail closed)"))
+        return
+    doc = pymupdf.open(out)
+    texts: dict[int, str] = {}
+    failures = []
+    try:
+        for pno in sorted(raster_pages):
+            try:
+                texts[pno] = ocr_page(doc[pno]).text
+            except (OcrError, OcrUnavailable) as exc:
+                failures.append(f"p{pno + 1}:{type(exc).__name__}")
+    finally:
+        doc.close()
+    if failures:
+        rep.checks.append(Check("V15", "raster pages: OCR leak search", FAIL,
+                                "could not OCR " + ", ".join(failures[:3]) + " of the output; "
+                                "an unreadable rebuilt page is not a pass"))
+        return
+    if not raster_needles:
+        rep.checks.append(Check("V15", "raster pages: OCR leak search", WARN,
+                                "no OCR-derived redacted text on raster pages (manual boxes only); "
+                                "their black-out is checked by V14 and the page image needs a human look"))
+    else:
+        full, token = _leaks(list(texts.values()), raster_needles)
+        if full:
+            rep.checks.append(Check("V15", "raster pages: OCR leak search", FAIL,
+                                    "redacted text is still readable by OCR on a rebuilt image page: "
+                                    + _fmt(full)))
+        elif token:
+            rep.checks.append(Check("V15", "raster pages: OCR leak search", FAIL,
+                                    "a fragment of a redacted name is still readable by OCR on a "
+                                    "rebuilt image page: " + _fmt(token)))
+        else:
+            rep.checks.append(Check("V15", "raster pages: OCR leak search", PASS,
+                                    f"none of {len(raster_needles)} redacted passages readable by OCR "
+                                    f"on {len(raster_pages)} rebuilt page(s)"))
+    _raster_retention(rep, boxes, raster_pages, source_pages, texts)
+
+
+def _raster_retention(rep, boxes, raster_pages, source_pages, out_texts):
+    """V16: was the content the OCR read outside the boxes kept in the rebuilt page?"""
+    if source_pages is None:
+        return
+    by_num = {p.page: p for p in source_pages}
+    missing = total = 0
+    for pno in sorted(raster_pages):
+        page_text = by_num.get(pno)
+        if page_text is None or pno not in out_texts:
+            continue
+        page_boxes = [r for p, r in boxes if p == pno]
+        hay = norm(out_texts[pno])
+        for w in page_text.words:
+            if len(w.text) < 3:
+                continue
+            if any(r[0] <= (w.rect.x0 + w.rect.x1) / 2 <= r[2]
+                   and r[1] <= (w.rect.y0 + w.rect.y1) / 2 <= r[3] for r in page_boxes):
+                continue                                     # this word was meant to go
+            total += 1
+            if norm(w.text) not in hay:
+                missing += 1
+    if not total:
+        return
+    ratio = 1.0 - missing / total
+    rep.checks.append(Check("V16", "raster pages: kept content", WARN if ratio < 0.9 else PASS,
+                            f"{missing} of {total} kept word(s) no longer readable after "
+                            "rasterisation; check the page visually" if ratio < 0.9
+                            else f"{total} kept word(s) still readable after rasterisation"))

@@ -30,10 +30,12 @@ MAX_BODY = 64 * 1024
 
 
 class ReviewApp:
-    def __init__(self, src: str, session: ReviewSession, decisions_path: str | None = None):
+    def __init__(self, src: str, session: ReviewSession, decisions_path: str | None = None,
+                 ocr: bool = True):
         self.src = str(Path(src).resolve())
         self.session = session
         self.decisions_path = decisions_path
+        self.ocr = bool(ocr)
         self.lock = threading.Lock()
         self.doc = pymupdf.open(self.src)
         self.sizes = [(p.rect.width, p.rect.height) for p in self.doc]
@@ -91,7 +93,7 @@ class ReviewApp:
         self._save()
 
     def repeats(self) -> int:
-        n = add_repeats(self.src, self.session)       # proposed as undecided, never auto-accepted
+        n = add_repeats(self.src, self.session, ocr=self.ocr)  # proposed as undecided, never auto-accepted
         self._save()
         return n
 
@@ -107,7 +109,7 @@ class ReviewApp:
         if not out_p.parent.is_dir():
             return {"ok": False, "message": "output folder does not exist"}
         try:
-            rep = export(self.src, str(out_p), self.session)
+            rep = export(self.src, str(out_p), self.session, ocr=self.ocr)
         except ExportRefused as exc:
             return {"ok": False, "message": str(exc), "blockers": self.session.blockers(),
                     "report": exc.report.to_dict() if exc.report else None}
@@ -218,8 +220,8 @@ def make_server(app: ReviewApp, port: int = 0):
 
 
 def serve(src: str, session: ReviewSession, decisions_path: str | None, port: int = 0,
-          open_browser: bool = True) -> None:
-    app = ReviewApp(src, session, decisions_path)
+          open_browser: bool = True, ocr: bool = True) -> None:
+    app = ReviewApp(src, session, decisions_path, ocr=ocr)
     httpd, token = make_server(app, port)
     url = f"http://127.0.0.1:{httpd.server_port}/?t={token}"
     print(f"Review page (local only, this run only): {url}", flush=True)

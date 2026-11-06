@@ -1,5 +1,6 @@
 import pymupdf
 
+import legal_redact.preflight as pf
 from legal_redact.cli import main
 from legal_redact.models import Severity
 from legal_redact.preflight import blocked, preflight
@@ -15,7 +16,8 @@ def test_clean_text_pdf_is_supported(plain_pdf):
     assert not [f for f in fs if f.severity is Severity.REVIEW]
 
 
-def test_image_only_pdf_is_refused(tmp_path):
+def test_image_only_pdf_is_review_with_ocr_and_refused_without(tmp_path, monkeypatch):
+    """A scan stops being REFUSE only when OCR is available to read it."""
     src = pymupdf.open()
     pg = src.new_page()
     pg.insert_text((72, 72), "Alice Example", fontsize=20)
@@ -25,6 +27,13 @@ def test_image_only_pdf_is_refused(tmp_path):
     ip.insert_image(ip.rect, pixmap=pix)
     out = tmp_path / "scan.pdf"
     img.save(out)
+
+    c = codes(str(out))
+    assert "PF003" in c and c["PF003"].severity is Severity.REVIEW
+    assert not blocked(list(c.values()))
+
+    # With Tesseract unavailable (or --no-ocr) the old fail-closed refusal stays.
+    monkeypatch.setattr(pf, "ocr_available", lambda: False)
     c = codes(str(out))
     assert "PF003" in c and blocked(list(c.values()))
 
