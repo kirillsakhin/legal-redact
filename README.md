@@ -1,5 +1,7 @@
 # legal-redact
 
+[![CI](https://github.com/kirillsakhin/legal-redact/actions/workflows/ci.yml/badge.svg)](https://github.com/kirillsakhin/legal-redact/actions/workflows/ci.yml)
+
 Review-first redaction of personal data in PDF contracts, with independent checks of the
 exported file. Local and offline by default.
 
@@ -29,7 +31,7 @@ Reports and decision files contain categories, page numbers, boxes and counts, n
 ## Install
 
 Requires Python 3.11 or later. Developed on 3.14; the same suite passes on 3.11, 3.12 and 3.13 on
-both Windows and Linux, and CI runs that matrix on every push.
+both Windows and Linux, and CI runs and passes that matrix on every push.
 
 ```
 python -m venv .venv
