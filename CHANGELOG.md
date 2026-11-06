@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.2 (2026-11-06)
+
+Review-page fix found during the first hands-on test of the scanned-PDF flow. No change to
+detection, redaction or verification.
+
+- Ticking two pre-flight acknowledgements (e.g. PF003 and PF016 on a scan) in quick succession
+  could leave the page showing "not acknowledged" even though the server had saved both: the two
+  state responses could arrive out of order and the older one overwrote the newer one. Actions now
+  apply only the newest response, so the gate opens as soon as the last acknowledgement lands.
+- A failed export attempt from before the acknowledgements ("Not exported: export blocked: ...")
+  stayed on screen after the gate opened, reading as if export were still blocked. The stale
+  failure message is now cleared when the gate becomes ready.
+# Changelog
+
 ## 0.3.1 (2026-11-06)
 
 Hands-on testing kit, no functional change to redaction or verification.

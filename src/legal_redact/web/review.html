@@ -119,7 +119,7 @@ aside{overflow-x:hidden}
 <script>
 "use strict";
 const T = new URLSearchParams(location.search).get("t") || "";
-let S = null, cur = 0, sel = null, drawMode = false;
+let S = null, cur = 0, sel = null, drawMode = false, actSeq = 0;
 const $ = id => document.getElementById(id);
 
 async function api(path, body) {
@@ -169,7 +169,15 @@ function drawBoxes() {
 
 function renderGate() {
   const g = $("gate"); g.replaceChildren();
-  if (S.can_export) { g.append(el("div", {className: "ready", textContent: "Ready to export."})); return; }
+  const res = $("result");
+  if (S.can_export) {
+    g.append(el("div", {className: "ready", textContent: "Ready to export."}));
+    // A failed export from before the last acknowledgement must not keep showing
+    // "Not exported: blocked" after the gate has opened; the failure was real but
+    // it is stale now, and leaving it reads as if export were still blocked.
+    if (res.querySelector(".blockers")) res.replaceChildren();
+    return;
+  }
   const ul = el("ul", {className: "blockers"});
   S.blockers.forEach(b => ul.append(el("li", {textContent: b})));
   g.append(ul);
@@ -234,7 +242,15 @@ function select(i, jump) {
 }
 
 async function act(path, body) {
-  try { setState((await api(path, body)).state); } catch (e) { alert(e.message); }
+  // Two clicks in quick succession (e.g. ticking two pre-flight acknowledgements)
+  // issue two requests; their responses may arrive out of order. Apply only the
+  // newest response, or an older state can overwrite the newer one and leave the
+  // gate showing an acknowledgement that the server already has.
+  const seq = ++actSeq;
+  try {
+    const state = (await api(path, body)).state;
+    if (seq === actSeq) setState(state);
+  } catch (e) { alert(e.message); }
 }
 
 function visibleTodo() {
