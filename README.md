@@ -5,7 +5,7 @@
 Review-first redaction of personal data in PDF and Word (`.docx`) contracts, with independent
 checks of the exported file. Local and offline by default.
 
-> **Status: pre-alpha (0.3.0).** Developed and tested on synthetic documents and public contract
+> **Status: pre-alpha (0.3.1).** Developed and tested on synthetic documents and public contract
 > text; not tested on real client documents. It does not make legal determinations, and removing
 > personal data is not anonymisation or GDPR compliance.
 

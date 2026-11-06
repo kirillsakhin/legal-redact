@@ -1,3 +1,17 @@
+## 0.3.1 (2026-11-06)
+
+Hands-on testing kit, no functional change to redaction or verification.
+
+- `scripts/make_test_documents.py` writes synthetic fixtures with planted personal data and
+  protected lookalikes: a text PDF, an image-only scan, a 90-degree-rotated scan, a `.docx` with a
+  name split across runs plus a comment and metadata, a `.docx` with a tracked change (expected
+  refusal) and a `.docx` with a full-page pasted image (expected refusal).
+- `scripts/check_planted_values.py` checks a redacted output for those values (PDF text layer, OCR
+  for rasterised pages, extracted text and raw bytes of every `.docx` package part) and reports
+  protected lookalikes that disappeared.
+- `docs/TESTING.md`: step-by-step hands-on test plan covering PDF, scans and orientation, `.docx`,
+  the fail-closed refusal cases, regression checks, what to report and the known gaps. README links
+  it; `testdocs/` is git-ignored.
 # Changelog
 
 ## 0.3.0 (2026-11-06)
