@@ -28,11 +28,16 @@ def test_image_only_pdf_is_review_with_ocr_and_refused_without(tmp_path, monkeyp
     out = tmp_path / "scan.pdf"
     img.save(out)
 
+    # Simulate an available OCR engine: this test must not depend on Tesseract being
+    # installed on the machine running the suite (CI does not install it).
+    monkeypatch.setattr(pf, "ocr_available", lambda: True)
+    monkeypatch.setattr(pf, "ocr_version", lambda: "test 5.0")
+    monkeypatch.setattr(pf, "ocr_orientation", lambda page: (0, 99.0))
     c = codes(str(out))
     assert "PF003" in c and c["PF003"].severity is Severity.REVIEW
     assert not blocked(list(c.values()))
 
-    # With Tesseract unavailable (or --no-ocr) the old fail-closed refusal stays.
+    # With OCR unavailable (or --no-ocr) the old fail-closed refusal stays.
     monkeypatch.setattr(pf, "ocr_available", lambda: False)
     c = codes(str(out))
     assert "PF003" in c and blocked(list(c.values()))
