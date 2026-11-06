@@ -101,7 +101,8 @@ the first glyph it removes, so following text slides left under the box). Both a
 ## Not measured
 
 - Real documents of any kind. Human reviewers (the reviewer error rates are simulated).
-- doc_redaction, commercial tools, LLM-based redaction, TypeSafe Jev, AutoTrust JEV-9B.
+- Commercial tools, LLM-based redaction, TypeSafe Jev and AutoTrust JEV-9B (doc_redaction is
+  measured separately below).
 - Hyphenated line ends, multi-page and tabular layouts, columns, non-Latin scripts, scans.
 - Open on v4: contract dates are sometimes labelled dates of birth (DOB precision 0.60), the
   likely cause of the remaining protected-text damage (not confirmed); ID span boundaries differ

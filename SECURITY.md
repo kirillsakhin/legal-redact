@@ -4,9 +4,14 @@ legal-redact handles confidential documents, so security reports are welcome.
 
 ## Reporting
 
-Please report vulnerabilities privately, not in a public issue. Use GitHub's "Report a
-vulnerability" option on the repository's Security tab. [TO CONFIRM: enable private vulnerability
-reporting on the repository before publishing; add a contact email here if one is wanted.]
+Please report vulnerabilities privately, not in a public issue.
+
+Use GitHub's private vulnerability reporting: open the repository's **Security** tab and choose
+**Report a vulnerability**. If that option is unavailable, open a minimal public issue asking for a
+private channel, and include no document content, exploit details or other confidential material in
+it.
+
+This is a pre-alpha project maintained on a best-effort basis. There is no bug bounty.
 
 ## What counts
 

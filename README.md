@@ -28,8 +28,8 @@ Reports and decision files contain categories, page numbers, boxes and counts, n
 
 ## Install
 
-Requires Python 3.11 or later. Developed on 3.14; a CI matrix for 3.11 to 3.13 is configured but has
-not yet run.
+Requires Python 3.11 or later. Developed on 3.14; the same suite passes on 3.11, 3.12 and 3.13 on
+both Windows and Linux, and CI runs that matrix on every push.
 
 ```
 python -m venv .venv
@@ -129,7 +129,9 @@ Do not put real client documents in issues, tests or benchmarks. All test data i
 
 AGPL-3.0-or-later (see `LICENSE`). PDF writing uses PyMuPDF, which is AGPL-3.0 or commercially
 licensed by Artifex; the project is AGPL for that reason, and the writer sits in one module
-(`redact.py`) so it could be replaced.
+(`redact.py`) so it could be replaced. PyMuPDF 2.x bundles the code that used to be published as
+the separate PyMuPDF4LLM and PyMuPDF Layout packages; `pymupdf4llm` and `pymupdf_layout` 2.x are
+empty shims kept only so the 1.x to 2.x upgrade is safe, and carry no licence of their own.
 
 | Component | Licence |
 |---|---|
@@ -142,12 +144,12 @@ licensed by Artifex; the project is AGPL for that reason, and the writer sits in
 | GLiNER (code) | Apache-2.0 |
 | GLiNER weights used: `knowledgator/gliner-pii-base-v1.0`, `urchade/gliner_multi_pii-v1` | Apache-2.0 (per the Hugging Face model cards; check before redistributing) |
 | PyTorch | BSD-style |
-| `pymupdf_layout`, `pymupdf4llm` (installed automatically with PyMuPDF 2.1) | [TO CONFIRM]: package metadata states no licence; check before any release |
+| `pymupdf4llm`, `pymupdf_layout` (empty shims installed automatically with PyMuPDF 2.1) | No licence declared: they contain metadata only, no code. The 4LLM and Layout code they replace ships inside PyMuPDF itself: AGPL-3.0 or Artifex commercial |
 
 ## Development
 
 ```
-pytest                                   # 67 tests, core dependencies only
+pytest                                   # 85 tests, core dependencies only
 legal-redact bench-export --n 15         # can the verifier actually fail?
 ```
 
