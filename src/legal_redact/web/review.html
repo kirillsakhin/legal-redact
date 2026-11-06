@@ -65,6 +65,9 @@ input[type=text]{width:100%;font:inherit;padding:6px 8px;border:1px solid var(--
 .checks .chip{flex:none;min-width:64px;text-align:center;border-radius:6px;white-space:nowrap}
 .checks li span:last-child,.ready,.blockers li{overflow-wrap:anywhere}
 aside{overflow-x:hidden}
+.cloud-warning{background:#4a1717;color:#ffe6e6;border:1px solid var(--bad);border-radius:8px;
+  padding:10px 14px;margin:10px 20px 0;font-size:13px;line-height:1.45}
+.cloud-warning strong{display:block;margin-bottom:4px;font-size:13.5px}
 .limits{color:var(--muted);font-size:12.5px;margin:8px 0 0;padding-left:18px;list-style:disc}
 .note{color:var(--muted);font-size:12.5px}
 .sr{position:absolute;left:-9999px}
@@ -75,6 +78,7 @@ aside{overflow-x:hidden}
   <h1 id="title">legal-redact review</h1>
   <div class="counts" id="counts" aria-live="polite"></div>
 </header>
+<div id="cloudwarning" class="cloud-warning" role="alert" hidden></div>
 <main>
   <div id="viewer">
     <div class="toolbar">
@@ -143,8 +147,17 @@ function render() {
   $("counts").textContent = `${n("pending")} need a decision · ${n("accepted")} accepted · ${n("rejected")} rejected`;
   $("pageno").textContent = `Page ${cur + 1} of ${S.pages.length}`;
   $("prev").disabled = cur === 0; $("next").disabled = cur >= S.pages.length - 1;
-  renderPage(); renderGate(); renderFindings(); renderList();
+  renderPage(); renderGate(); renderFindings(); renderList(); renderCloudWarning();
   if (!$("out").value) $("out").value = S.out_default;
+}
+
+function renderCloudWarning() {
+  const w = $("cloudwarning");
+  if (!S.ocr || S.ocr.local) { w.hidden = true; w.replaceChildren(); return; }
+  w.replaceChildren();
+  w.append(el("strong", {textContent: "Cloud/third-party OCR is selected: page images leave this machine"}),
+           el("div", {textContent: S.ocr.disclaimer || "Third-party OCR is configured."}));
+  w.hidden = false;
 }
 
 function renderPage() {
@@ -194,7 +207,7 @@ function renderFindings() {
     if (f.severity === "review") {
       const cb = el("input", {type: "checkbox", id: "ack-" + f.code, checked: f.ack});
       cb.onchange = () => act("/api/ack", {code: f.code, on: cb.checked});
-      li.append(el("label", {htmlFor: cb.id}, cb, " I have looked at this"));
+      li.append(el("label", {htmlFor: cb.id}, cb, " " + (f.ack_label || "I have looked at this")));
     }
     if (f.severity === "refuse") li.append(el("div", {className: "note", textContent: "Export is refused for this file."}));
     ul.append(li);

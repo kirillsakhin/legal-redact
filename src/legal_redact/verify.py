@@ -51,6 +51,9 @@ class Check:
 class VerifyReport:
     checks: list[Check] = field(default_factory=list)
     limits: list[str] = field(default_factory=lambda: list(LIMITS))
+    # Engine name/version/local and which reader did the OCR cross-check.
+    # Contains configuration only, never document text.
+    ocr_engine: dict | None = None
 
     @property
     def passed(self) -> bool:
@@ -61,10 +64,22 @@ class VerifyReport:
 
     def to_dict(self) -> dict:
         return {"passed": self.passed,
-                "checks": [c.__dict__ for c in self.checks], "limits": self.limits}
+                "checks": [c.__dict__ for c in self.checks], "limits": self.limits,
+                "ocr_engine": self.ocr_engine}
 
     def format(self) -> str:
         lines = [f"{c.status:11} {c.id} {c.name}: {c.detail}" for c in self.checks]
+        if self.ocr_engine:
+            engine = self.ocr_engine
+            cfg = engine.get("configured") or {}
+            lines.append(
+                "OCR engine: "
+                + f"{cfg.get('name') or cfg.get('engine')}"
+                + (f" {cfg.get('version')}" if cfg.get("version") else " (version unknown)")
+                + (" [local]" if cfg.get("local") else " [NON-LOCAL: pages leave this host]")
+                + f"; verification reader: {engine.get('verification_reader')}"
+                + (" (independent cross-check)" if engine.get("independent")
+                   else " (SAME-ENGINE: weaker cross-check)"))
         lines.append("RESULT: " + ("no leak found in the supported checks" if self.passed
                                    else "LEAK DETECTED - do not release this file"))
         lines += ["", "Not covered (these need your judgment):"] + [f"  - {x}" for x in self.limits]
@@ -171,16 +186,27 @@ def _leaks(page_texts: list[str], needles) -> tuple[Counter, Counter]:
 
 # ---- the checks ------------------------------------------------------------
 def verify_export(src, out, boxes, needles, *, raster_pages=frozenset(),
-                  raster_needles=(), source_pages=None) -> VerifyReport:
+                  raster_needles=(), source_pages=None,
+                  engine_config=None) -> VerifyReport:
     """Check the exported file. `raster_pages` are pages rebuilt as images (scans).
 
     `raster_needles` is the subset of needles whose boxes live on raster pages:
     those pages have no text layer, so the leak check for them is OCR of the
     OUTPUT image. `source_pages` (the stage-1b extraction of the source) is
     optional and only used to warn about content lost by rasterisation.
+    `engine_config` is the engine the run used; Tesseract is preferred as the
+    OCR cross-check reader whenever it exists (independent of the engine that
+    produced the suggestions). It is never used to make a FAIL pass.
     """
+    from .ocr_backends import default_config
+    config = engine_config or default_config()
     rep = VerifyReport()
     add = lambda i, n, s, d: rep.checks.append(Check(i, n, s, d))  # noqa: E731
+    configured = config.info()
+    rep.ocr_engine = {"configured": {"name": configured.get("name"),
+                                     "version": configured.get("version"),
+                                     "local": configured.get("local")},
+                      "verification_reader": None, "independent": None}
 
     # V01/V02 text extraction by two independent readers
     for cid, name, reader in (("V01", "text search (pdfminer.six)", _pdfminer_pages),
@@ -205,7 +231,7 @@ def verify_export(src, out, boxes, needles, *, raster_pages=frozenset(),
     _visual(rep, out, boxes)
     _integrity(rep, src, out)
     _layout_shift(rep, src, out, boxes)
-    _raster(rep, out, boxes, raster_pages, raster_needles, source_pages)
+    _raster(rep, out, boxes, raster_pages, raster_needles, source_pages, config)
     return rep
 
 
@@ -414,12 +440,12 @@ def _integrity(rep, src, out):
 
 
 # ---- raster (OCR'd / scanned) pages ----------------------------------------
-def _raster(rep, out, boxes, raster_pages, raster_needles, source_pages):
+def _raster(rep, out, boxes, raster_pages, raster_needles, source_pages, engine_config):
     if not raster_pages:
         return
     _raster_text_layer(rep, out, raster_pages)
     _raster_image_data(rep, out, boxes, raster_pages)
-    _raster_ocr(rep, out, boxes, raster_pages, raster_needles, source_pages)
+    _raster_ocr(rep, out, boxes, raster_pages, raster_needles, source_pages, engine_config)
 
 
 def _bright_fraction(pix: pymupdf.Pixmap, x0: int, y0: int, x1: int, y1: int,
@@ -546,7 +572,7 @@ def _raster_image_data(rep, out, boxes, raster_pages):
                                 f"{checked} box(es) dark in the rebuilt page image"))
 
 
-def _raster_ocr(rep, out, boxes, raster_pages, raster_needles, source_pages):
+def _raster_ocr(rep, out, boxes, raster_pages, raster_needles, source_pages, engine_config):
     """V15: OCR the OUTPUT image and search for the redacted strings.
 
     For an image page this is the real leak check: if OCR can still read a
@@ -554,36 +580,72 @@ def _raster_ocr(rep, out, boxes, raster_pages, raster_needles, source_pages):
     person name are FAIL here (not the WARN used for text pages): an image page
     cannot be "mostly redacted", and a half-covered name is a readable half-name.
 
+    Reader choice: Tesseract is used whenever it exists, even when a custom
+    engine produced the suggestions, so the check is an independent reader. Only
+    when Tesseract is absent does the configured engine check its own output --
+    a weaker, same-engine cross-check that pre-flight made the lawyer
+    acknowledge (PF021). Reader failures are FAIL, never PASS.
+
     V16 is the other half: the content that should have SURVIVED should still be
     readable after rasterisation (a blank or truncated rebuilt page is a data-loss
     bug; it is warned, not failed, because it is not a leak).
     """
-    from .ocr import OcrError, OcrUnavailable, ocr_available, ocr_page
-    if not ocr_available():
+    from .ocr import OcrError, OcrUnavailable, ocr_available
+    from .ocr_backends import EngineConfigError, TesseractEngine, page_text_with_engine
+    reader = None
+    independent = False
+    if ocr_available():
+        reader = TesseractEngine()
+        reader_label = "Tesseract (independent reader)"
+        independent = True
+    elif engine_config.spec != "tesseract":
+        try:
+            candidate = engine_config.engine()
+            available = candidate.available()
+        except EngineConfigError as exc:
+            rep.checks.append(Check("V15", "raster pages: OCR leak search", FAIL,
+                                    f"the configured OCR engine is invalid ({exc}); rebuilt "
+                                    "image pages cannot be checked and the output is withheld "
+                                    "(fail closed)"))
+            return
+        if not available:
+            rep.checks.append(Check("V15", "raster pages: OCR leak search", FAIL,
+                                    "the configured OCR engine is unavailable, so rebuilt image "
+                                    "pages cannot be checked; the output is withheld (fail closed)"))
+            return
+        reader = candidate
+        reader_label = f"configured engine {candidate.name} (SAME-ENGINE, weaker)"
+        independent = False
+    else:
         rep.checks.append(Check("V15", "raster pages: OCR leak search", FAIL,
                                 "Tesseract is unavailable, so rebuilt image pages cannot be "
                                 "checked; the output is withheld (fail closed)"))
         return
+    rep.ocr_engine["verification_reader"] = reader_label
+    rep.ocr_engine["independent"] = independent
     doc = pymupdf.open(out)
     texts: dict[int, str] = {}
     failures = []
     try:
         for pno in sorted(raster_pages):
             try:
-                texts[pno] = ocr_page(doc[pno]).text
+                texts[pno] = page_text_with_engine(doc[pno], reader).text
             except (OcrError, OcrUnavailable) as exc:
                 failures.append(f"p{pno + 1}:{type(exc).__name__}")
     finally:
         doc.close()
     if failures:
         rep.checks.append(Check("V15", "raster pages: OCR leak search", FAIL,
-                                "could not OCR " + ", ".join(failures[:3]) + " of the output; "
-                                "an unreadable rebuilt page is not a pass"))
+                                "could not OCR " + ", ".join(failures[:3]) + " of the output "
+                                f"with {reader_label}; an unreadable rebuilt page is not a pass"))
         return
+    suffix = "" if independent else (" -- SAME-ENGINE cross-check (weakest available; Tesseract "
+                                     "absent, PF021 acknowledged)")
     if not raster_needles:
         rep.checks.append(Check("V15", "raster pages: OCR leak search", WARN,
                                 "no OCR-derived redacted text on raster pages (manual boxes only); "
-                                "their black-out is checked by V14 and the page image needs a human look"))
+                                "their black-out is checked by V14 and the page image needs a human "
+                                "look" + suffix))
     else:
         full, token = _leaks(list(texts.values()), raster_needles)
         if full:
@@ -596,8 +658,9 @@ def _raster_ocr(rep, out, boxes, raster_pages, raster_needles, source_pages):
                                     "rebuilt image page: " + _fmt(token)))
         else:
             rep.checks.append(Check("V15", "raster pages: OCR leak search", PASS,
-                                    f"none of {len(raster_needles)} redacted passages readable by OCR "
-                                    f"on {len(raster_pages)} rebuilt page(s)"))
+                                    f"none of {len(raster_needles)} redacted passages readable by "
+                                    f"{reader_label} on {len(raster_pages)} rebuilt page(s)"
+                                    + suffix))
     _raster_retention(rep, boxes, raster_pages, source_pages, texts)
 
 

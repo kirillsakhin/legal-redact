@@ -1,8 +1,12 @@
 """Command line entry point.
 
 Output never contains document text; only counts, codes and page numbers.
-OCR (local Tesseract) is used automatically on pages with no usable text layer;
-`--no-ocr` on every command restores the old fail-closed refusal of scans.
+OCR (local Tesseract by default) is used automatically on pages with no usable
+text layer; `--no-ocr` on every command restores the old fail-closed refusal of
+scans. A custom engine can be selected with `--ocr-engine`/`--ocr-command` (see
+docs/OCR_BACKENDS.md); a third-party/cloud engine is refused unless the run is
+approved with `--allow-cloud-ocr`, and the verbatim cloud disclaimer is printed
+on stderr and must be acknowledged per file before export.
 
 PDFs and .docx files are both accepted by `inspect`, `suggest` and `redact`.
 The browser review page renders PDF pages, so `review` stays PDF-only.
@@ -10,13 +14,16 @@ The browser review page renders PDF pages, so `review` stays PDF-only.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
 import pymupdf
 
 from .extract import extract_pages
-from .ocr import ocr_available, ocr_version
+from .ocr import OcrError, OcrUnavailable, ocr_available, ocr_version
+from .ocr_backends import (CLOUD_OCR_DISCLAIMER, CloudOcrNotApproved, EngineConfig,
+                           EngineConfigError, resolve_config)
 from .preflight import blocked, preflight
 
 # Word container extensions this tool routes to the DOCX pipeline: .docx is the
@@ -66,7 +73,48 @@ def _inspect_docx(path: str) -> int:
 
 
 
-def _inspect(path: str, ocr: bool = True) -> int:
+def _resolve_engine(args) -> EngineConfig | None:
+    """Resolve/gate the OCR engine for this run; prints and returns None on refusal.
+
+    This runs BEFORE any document is opened for OCR: a non-local engine without
+    `--allow-cloud-ocr` is refused here, so no page is ever rendered or sent.
+    For a non-local engine the verbatim cloud disclaimer goes to stderr on every
+    command (inspect included), before any OCR work.
+    """
+    try:
+        config = resolve_config(engine=getattr(args, "ocr_engine", None),
+                                command=getattr(args, "ocr_command", None),
+                                allow_cloud=getattr(args, "allow_cloud_ocr", False),
+                                local=True if getattr(args, "ocr_local", False) else None,
+                                env=os.environ)
+    except EngineConfigError as exc:
+        print(f"REFUSE PF020 OCR engine configuration error: {exc}", file=sys.stderr)
+        return None
+    if not config.local:
+        print(CLOUD_OCR_DISCLAIMER, file=sys.stderr, flush=True)
+        try:
+            config.check_gate()
+        except CloudOcrNotApproved as exc:
+            print(f"REFUSE PF020 {exc}", file=sys.stderr)
+            return None
+    return config
+
+
+def _add_ocr_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--ocr-engine", default=None, metavar="SPEC",
+                        help="OCR engine: 'tesseract' (default) or 'command:<cmdline>' "
+                             "(see docs/OCR_BACKENDS.md)")
+    parser.add_argument("--ocr-command", default=None, metavar="CMD",
+                        help="external OCR wrapper command (same as --ocr-engine command:<CMD>)")
+    parser.add_argument("--ocr-local", action="store_true",
+                        help="declare that the custom OCR command runs locally; without this a "
+                             "command engine is treated as third-party (cloud)")
+    parser.add_argument("--allow-cloud-ocr", action="store_true",
+                        help="approve sending page images to a third-party OCR engine for this "
+                             "run; the per-file cloud finding must also be acknowledged")
+
+
+def _inspect(path: str, ocr: bool = True, engine_config: EngineConfig | None = None) -> int:
     if _pipeline_format(path) == "docx":
         return _inspect_docx(path)
     try:
@@ -74,24 +122,47 @@ def _inspect(path: str, ocr: bool = True) -> int:
     except Exception as exc:  # corrupt or not a PDF
         print(f"REFUSE PF000 cannot open file as PDF ({type(exc).__name__})")
         return 2
-    findings = preflight(doc, ocr=ocr)
-    print(f"pages={doc.page_count}")
-    if ocr_available():
-        print(f"ocr=available ({ocr_version() or 'tesseract'})")
-    else:
-        print("ocr=unavailable (pages without a text layer will be refused)")
-    if not (doc.needs_pass or doc.is_encrypted):
-        pages = extract_pages(doc, ocr=ocr)
-        print(f"words={sum(len(p.words) for p in pages)}")
-        print(f"ocr_pages={sum(1 for p in pages if p.ocr)}")
-    for f in findings:
-        where = f" p{f.page + 1}" if f.page is not None else ""
-        print(f"{f.severity.value.upper():7} {f.code}{where}: {f.message}")
-    if blocked(findings):
-        print("RESULT: export would be refused")
-        return 1
-    print("RESULT: supported (review the findings above)")
-    return 0
+    try:
+        findings = preflight(doc, ocr=ocr, engine_config=engine_config)
+        print(f"pages={doc.page_count}")
+        if ocr and engine_config is not None:
+            info = engine_config.info()
+            status = "available" if engine_config.engine().available() else "unavailable"
+            print(f"ocr={status} (engine={info['name']} version={info['version'] or 'unknown'} "
+                  f"local={'yes' if info['local'] else 'no'})")
+        elif ocr_available():
+            print(f"ocr=available ({ocr_version() or 'tesseract'})")
+        else:
+            print("ocr=unavailable (pages without a text layer will be refused)")
+        if not (doc.needs_pass or doc.is_encrypted):
+            try:
+                pages = extract_pages(doc, ocr=ocr, engine_config=engine_config)
+            except (OcrError, OcrUnavailable, EngineConfigError) as exc:
+                print(f"REFUSE PF020 OCR engine failed: {exc}", file=sys.stderr)
+                return 1
+            print(f"words={sum(len(p.words) for p in pages)}")
+            print(f"ocr_pages={sum(1 for p in pages if p.ocr)}")
+        for f in findings:
+            where = f" p{f.page + 1}" if f.page is not None else ""
+            print(f"{f.severity.value.upper():7} {f.code}{where}: {f.message}")
+        if blocked(findings):
+            print("RESULT: export would be refused")
+            return 1
+        print("RESULT: supported (review the findings above)")
+        return 0
+    finally:
+        doc.close()
+
+
+def _inspect_command(args) -> int:
+    if _pipeline_format(args.pdf) == "docx":
+        return _inspect_docx(args.pdf)
+    config = None
+    if not args.no_ocr:
+        config = _resolve_engine(args)
+        if config is None:
+            return 2
+    return _inspect(args.pdf, ocr=not args.no_ocr, engine_config=config)
 
 
 def _detector(name: str):
@@ -118,14 +189,26 @@ def _detector(name: str):
 def _suggest(args) -> int:
     from .pipeline import save_decisions
     from .policy import load_policy
+    docx = _pipeline_format(args.pdf) == "docx"
+    config = None
+    if not docx and not args.no_ocr:
+        config = _resolve_engine(args)
+        if config is None:
+            return 2
     det = _detector(args.detector)
     if det is None:
         return 2
-    if _pipeline_format(args.pdf) == "docx":
-        from .docx.pipeline import suggest_docx as suggest_fn
-    else:
-        from .pipeline import suggest as suggest_fn
-    s = suggest_fn(args.pdf, det, load_policy(args.policy), ocr=not args.no_ocr)
+    try:
+        if docx:
+            from .docx.pipeline import suggest_docx as suggest_fn
+            s = suggest_fn(args.pdf, det, load_policy(args.policy))
+        else:
+            from .pipeline import suggest as suggest_fn
+            s = suggest_fn(args.pdf, det, load_policy(args.policy),
+                           ocr=not args.no_ocr, engine_config=config)
+    except (OcrError, OcrUnavailable, EngineConfigError) as exc:
+        print(f"REFUSE PF020 OCR engine failed: {exc}", file=sys.stderr)
+        return 1
     save_decisions(s, args.out)
     r = s.report()
     print(f"decisions written: {len(s.decisions)}  status={r['by_status']}")
@@ -196,32 +279,56 @@ def _review(args) -> int:
     from .pipeline import load_decisions, save_decisions, suggest
     from .policy import load_policy
     from .review_server import serve
-    dec = args.decisions or str(Path(args.pdf).with_name(Path(args.pdf).name + ".decisions.json"))
-    if Path(dec).exists():
-        print(f"Resuming decisions from {dec}")
-        session = load_decisions(args.pdf, dec, ocr=not args.no_ocr)
-    else:
-        det = _detector(args.detector)
-        if det is None:
+    config = None
+    if not args.no_ocr:
+        config = _resolve_engine(args)
+        if config is None:
             return 2
-        print("Detecting (local models; the first run loads them)...")
-        session = suggest(args.pdf, det, load_policy(args.policy), ocr=not args.no_ocr)
-        save_decisions(session, dec)
+    dec = args.decisions or str(Path(args.pdf).with_name(Path(args.pdf).name + ".decisions.json"))
+    try:
+        if Path(dec).exists():
+            print(f"Resuming decisions from {dec}")
+            session = load_decisions(args.pdf, dec, ocr=not args.no_ocr,
+                                     engine_config=config)
+        else:
+            det = _detector(args.detector)
+            if det is None:
+                return 2
+            print("Detecting (local models; the first run loads them)...")
+            session = suggest(args.pdf, det, load_policy(args.policy),
+                              ocr=not args.no_ocr, engine_config=config)
+            save_decisions(session, dec)
+    except (OcrError, OcrUnavailable, EngineConfigError) as exc:
+        print(f"REFUSE PF020 OCR engine failed: {exc}", file=sys.stderr)
+        return 1
     serve(args.pdf, session, dec, args.port, open_browser=not args.no_browser,
-          ocr=not args.no_ocr)
+          ocr=not args.no_ocr, engine_config=config)
     return 0
 
 
 def _redact(args) -> int:
     from .pipeline import ExportRefused
     docx = _pipeline_format(args.pdf) == "docx"
-    if docx:
-        from .docx.pipeline import export_docx as export_fn
-        from .docx.pipeline import load_decisions_docx as load_fn
-    else:
-        from .pipeline import export as export_fn
-        from .pipeline import load_decisions as load_fn
-    s = load_fn(args.pdf, args.decisions, ocr=not args.no_ocr)
+    config = None
+    if not docx and not args.no_ocr:
+        config = _resolve_engine(args)
+        if config is None:
+            return 2
+    try:
+        if docx:
+            from .docx.pipeline import export_docx as export_fn
+            from .docx.pipeline import load_decisions_docx as load_fn
+        else:
+            from .pipeline import export as export_fn
+            from .pipeline import load_decisions as load_fn
+        if docx:
+            s = load_fn(args.pdf, args.decisions)
+        else:
+            s = load_fn(args.pdf, args.decisions, ocr=not args.no_ocr,
+                        engine_config=config)
+    except EngineConfigError as exc:
+        print(f"REFUSE PF020 OCR engine configuration error: {exc}", file=sys.stderr)
+        return 1
     for code in filter(None, args.ack.split(",")):
         s.acknowledge(code.strip())
     if args.accept_proposed:
@@ -231,10 +338,15 @@ def _redact(args) -> int:
             print("note: --accept-repeats is not implemented for .docx yet; ignored")
         else:
             from .pipeline import add_repeats
-            print(f"accepted {add_repeats(args.pdf, s, accept=True, ocr=not args.no_ocr)} "
-                  "other occurrence(s) of accepted text")
+            added = add_repeats(args.pdf, s, accept=True, ocr=not args.no_ocr,
+                                engine_config=config)
+            print(f"accepted {added} other occurrence(s) of accepted text")
     try:
-        rep = export_fn(args.pdf, args.out, s, ocr=not args.no_ocr)
+        if docx:
+            rep = export_fn(args.pdf, args.out, s)
+        else:
+            rep = export_fn(args.pdf, args.out, s, ocr=not args.no_ocr,
+                            engine_config=config)
     except ExportRefused as exc:
         print(f"REFUSED: {exc}")
         if exc.report:
@@ -255,6 +367,7 @@ def main(argv: list[str] | None = None) -> int:
     ins.add_argument("--no-ocr", action="store_true",
                      help="do not use OCR; refuse pages without a text layer (old behaviour; "
                           "no effect on .docx)")
+    _add_ocr_args(ins)
     bn = sub.add_parser("bench", help="run the synthetic benchmark")
     bn.add_argument("--detector", nargs="+", default=["rules"],
                     choices=["rules", "presidio", "presidio-lg", "gliner-kn", "gliner-ur",
@@ -273,6 +386,7 @@ def main(argv: list[str] | None = None) -> int:
     sg.add_argument("--no-ocr", action="store_true",
                     help="do not use OCR; refuse pages without a text layer (old behaviour; "
                          "no effect on .docx)")
+    _add_ocr_args(sg)
     rd = sub.add_parser("redact", help="export a redacted copy after review, then verify it")
     rd.add_argument("pdf", help="PDF or .docx file")
     rd.add_argument("--decisions", required=True)
@@ -283,6 +397,7 @@ def main(argv: list[str] | None = None) -> int:
     rd.add_argument("--no-ocr", action="store_true",
                     help="do not use OCR; refuse pages without a text layer (old behaviour; "
                          "no effect on .docx)")
+    _add_ocr_args(rd)
     rv = sub.add_parser("review", help="open the local review page (accept / reject / add boxes, export)")
     rv.add_argument("pdf", help="PDF file (the review page is PDF-only for now)")
     rv.add_argument("--policy", default="counterparty")
@@ -293,6 +408,7 @@ def main(argv: list[str] | None = None) -> int:
     rv.add_argument("--no-browser", action="store_true")
     rv.add_argument("--no-ocr", action="store_true",
                     help="do not use OCR; refuse pages without a text layer (old behaviour)")
+    _add_ocr_args(rv)
     hh = sub.add_parser("bench-h2h", help="score our tool and external tools' output PDFs identically")
     hh.add_argument("--work", required=True, help="working folder (sources and our outputs go here)")
     hh.add_argument("--suite", default="holdout4", choices=["holdout4", "indep"],
@@ -320,7 +436,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if not res["clean_fail"] and all(res["caught"][n] == res["total"][n]
                                                   for n in export_suite.INJECTORS) else 1
     if args.cmd == "inspect":
-        return _inspect(args.pdf, ocr=not args.no_ocr)
+        return _inspect_command(args)
     if args.cmd == "bench":
         from .bench.run import main_bench
         return main_bench(args.detector, args.n, args.seed, args.show_misses,

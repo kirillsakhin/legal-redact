@@ -18,10 +18,14 @@ MANUAL = "MANUAL"
 
 
 class ReviewSession:
-    def __init__(self, decisions: list[Decision], findings: list[Finding]):
+    def __init__(self, decisions: list[Decision], findings: list[Finding],
+                 ocr_info: dict | None = None):
         self.decisions = decisions
         self.findings = findings
         self.acknowledged: set[str] = set()
+        # Engine pin recorded by suggest ({"engine","version","local","cloud"}); export
+        # refuses when the current engine differs. None on sessions that never OCR'd.
+        self.ocr_info = ocr_info
 
     # --- decisions ---------------------------------------------------------
     def accept(self, i: int) -> None:

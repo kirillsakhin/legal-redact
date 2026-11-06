@@ -29,6 +29,7 @@ class Word:
     line_id: int      # (block, line) pair collapsed to one id per page
     start: int        # char offset of this word in PageText.text
     end: int          # exclusive
+    confidence: float | None = None   # 0..1 from OCR engines; None for a real text layer
 
 
 @dataclass

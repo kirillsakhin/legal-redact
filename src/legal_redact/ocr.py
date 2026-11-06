@@ -336,7 +336,7 @@ def _rows_to_words(rows, page: pymupdf.Page, pix: pymupdf.Pixmap,
     offset = 0
     line_ids: dict[tuple[int, int, int], int] = {}
     prev_key: tuple[int, int, int] | None = None
-    for block, par, ln, _word_no, left, top, box_w, box_h, text, _conf in rows:
+    for block, par, ln, _word_no, left, top, box_w, box_h, text, conf in rows:
         key = (block, par, ln)
         lid = line_ids.setdefault(key, len(line_ids))
         if prev_key is not None:
@@ -358,7 +358,7 @@ def _rows_to_words(rows, page: pymupdf.Page, pix: pymupdf.Pixmap,
             x0, y0, x1, y1 = u0, v0, u1, v1
         rect = Rect(max(0.0, min(x0, x1)), max(0.0, min(y0, y1)),
                     min(width, max(x0, x1)), min(height, max(y0, y1)))
-        words.append(Word(text, rect, lid, start, offset))
+        words.append(Word(text, rect, lid, start, offset, confidence=conf / 100.0))
         prev_key = key
     return words, "".join(parts)
 
@@ -368,15 +368,12 @@ def _candidate_score(mean_confidence: float, word_count: int) -> float:
     return mean_confidence + 15.0 * math.log10(word_count + 1)
 
 
-def ocr_page(page: pymupdf.Page, dpi: int = DEFAULT_DPI) -> PageText:
-    """OCR one page into the same PageText model the text extractor produces.
+def ocr_page_meta(page: pymupdf.Page, dpi: int = DEFAULT_DPI) -> tuple[PageText, dict]:
+    """OCR one page; returns the PageText plus reader metadata for the engine layer.
 
-    Rectangles are in PDF points in the page's own coordinate system (PyMuPDF
-    convention, top-left origin), obtained by scaling the image pixel boxes by
-    the actual rendered size -- not by assuming dpi, so rounded page dimensions
-    cannot drift coordinates. If the first read is unreliable, Tesseract OSD
-    decides whether the page is rotated; the rotated read is mapped back and
-    only replaces the first one when it is genuinely better.
+    The metadata carries the orientation correction Tesseract applied (degrees
+    clockwise, 0 when none), the mean word confidence and the word count. It
+    never carries document text.
     """
     if not ocr_available():
         raise OcrUnavailable(
@@ -397,4 +394,20 @@ def ocr_page(page: pymupdf.Page, dpi: int = DEFAULT_DPI) -> PageText:
                 best = {"rows": rotated_rows, "conf": rotated_conf,
                         "pix": rotated_pix, "rotation": angle}
     words, text = _rows_to_words(best["rows"], page, best["pix"], best["rotation"])
-    return PageText(page.number, page.rect.width, page.rect.height, text, words, ocr=True)
+    page_text = PageText(page.number, page.rect.width, page.rect.height, text, words, ocr=True)
+    meta = {"rotation": best["rotation"], "mean_confidence": best["conf"],
+            "words": len(words), "engine": "tesseract", "local": True}
+    return page_text, meta
+
+
+def ocr_page(page: pymupdf.Page, dpi: int = DEFAULT_DPI) -> PageText:
+    """OCR one page into the same PageText model the text extractor produces.
+
+    Rectangles are in PDF points in the page's own coordinate system (PyMuPDF
+    convention, top-left origin), obtained by scaling the image pixel boxes by
+    the actual rendered size -- not by assuming dpi, so rounded page dimensions
+    cannot drift coordinates. If the first read is unreliable, Tesseract OSD
+    decides whether the page is rotated; the rotated read is mapped back and
+    only replaces the first one when it is genuinely better.
+    """
+    return ocr_page_meta(page, dpi)[0]

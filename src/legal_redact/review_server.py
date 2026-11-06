@@ -23,19 +23,28 @@ from urllib.parse import parse_qs, urlparse
 
 import pymupdf
 
+from .ocr_backends import CLOUD_OCR_ACK_LABEL, CLOUD_OCR_DISCLAIMER, EngineConfig, default_config
 from .pipeline import ExportRefused, add_repeats, export, save_decisions
 from .review import ReviewSession
 
 MAX_BODY = 64 * 1024
 
 
+def _ack_label(code: str) -> str:
+    """The checkbox wording for a REVIEW finding; the cloud approval is explicit."""
+    if code == "PF019":                       # cloud/third-party OCR disclaimer
+        return CLOUD_OCR_ACK_LABEL
+    return "I have looked at this"
+
+
 class ReviewApp:
     def __init__(self, src: str, session: ReviewSession, decisions_path: str | None = None,
-                 ocr: bool = True):
+                 ocr: bool = True, engine_config: EngineConfig | None = None):
         self.src = str(Path(src).resolve())
         self.session = session
         self.decisions_path = decisions_path
         self.ocr = bool(ocr)
+        self.engine_config = engine_config or default_config()
         self.lock = threading.Lock()
         self.doc = pymupdf.open(self.src)
         self.sizes = [(p.rect.width, p.rect.height) for p in self.doc]
@@ -55,10 +64,25 @@ class ReviewApp:
                  "status": d.status, "source": d.source, "rects": [list(r) for r in d.rects]}
                 for i, d in enumerate(s.decisions)],
             "findings": [{"code": f.code, "severity": f.severity.value, "message": f.message,
-                          "page": f.page, "ack": f.code in s.acknowledged} for f in s.findings],
+                          "page": f.page, "ack": f.code in s.acknowledged,
+                          "ack_label": _ack_label(f.code)} for f in s.findings],
             "blockers": s.blockers(),
             "can_export": s.can_export(),
             "out_default": self.out_default,
+            "ocr": self._ocr_state(),
+        }
+
+    def _ocr_state(self) -> dict:
+        """Current engine name/version/local plus the cloud warning (config, not text)."""
+        info = self.engine_config.info()
+        return {
+            "name": info.get("name"),
+            "version": info.get("version"),
+            "local": bool(info.get("local")),
+            "cloud_approved": bool(self.engine_config.allow_cloud and not info.get("local")),
+            "disclaimer": None if info.get("local") else CLOUD_OCR_DISCLAIMER,
+            "ack_label": CLOUD_OCR_ACK_LABEL,
+            "recorded": dict(self.session.ocr_info) if self.session.ocr_info else None,
         }
 
     def _save(self) -> None:
@@ -93,7 +117,8 @@ class ReviewApp:
         self._save()
 
     def repeats(self) -> int:
-        n = add_repeats(self.src, self.session, ocr=self.ocr)  # proposed as undecided, never auto-accepted
+        n = add_repeats(self.src, self.session, ocr=self.ocr,
+                        engine_config=self.engine_config)  # proposed, never auto-accepted
         self._save()
         return n
 
@@ -109,7 +134,8 @@ class ReviewApp:
         if not out_p.parent.is_dir():
             return {"ok": False, "message": "output folder does not exist"}
         try:
-            rep = export(self.src, str(out_p), self.session, ocr=self.ocr)
+            rep = export(self.src, str(out_p), self.session, ocr=self.ocr,
+                        engine_config=self.engine_config)
         except ExportRefused as exc:
             return {"ok": False, "message": str(exc), "blockers": self.session.blockers(),
                     "report": exc.report.to_dict() if exc.report else None}
@@ -220,8 +246,9 @@ def make_server(app: ReviewApp, port: int = 0):
 
 
 def serve(src: str, session: ReviewSession, decisions_path: str | None, port: int = 0,
-          open_browser: bool = True, ocr: bool = True) -> None:
-    app = ReviewApp(src, session, decisions_path, ocr=ocr)
+          open_browser: bool = True, ocr: bool = True,
+          engine_config: EngineConfig | None = None) -> None:
+    app = ReviewApp(src, session, decisions_path, ocr=ocr, engine_config=engine_config)
     httpd, token = make_server(app, port)
     url = f"http://127.0.0.1:{httpd.server_port}/?t={token}"
     print(f"Review page (local only, this run only): {url}", flush=True)

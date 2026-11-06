@@ -5,7 +5,7 @@
 Review-first redaction of personal data in PDF and Word (`.docx`) contracts, with independent
 checks of the exported file. Local and offline by default.
 
-> **Status: pre-alpha (0.3.2).** Developed and tested on synthetic documents and public contract
+> **Status: pre-alpha (0.4.0).** Developed and tested on synthetic documents and public contract
 > text; not tested on real client documents. It does not make legal determinations, and removing
 > personal data is not anonymisation or GDPR compliance.
 
@@ -43,7 +43,7 @@ verifier re-reads it with other stdlib readers. The PDF pipeline's behaviour is 
 | Format | Read | Export | Review page | Notes |
 |---|---|---|---|---|
 | PDF, text layer | yes | yes (`redact.py`) | yes | the original pipeline; unchanged in 0.3.0 |
-| PDF, scanned | OCR (English) when Tesseract is available | yes, re-rasterised image pages | yes | see `docs/OCR_EVALUATION.md` |
+| PDF, scanned | OCR (English) with local Tesseract, or a configured custom engine (docs/OCR_BACKENDS.md) | yes, re-rasterised image pages | yes | see `docs/OCR_EVALUATION.md` |
 | `.docx` (OOXML Word) | yes (`docx/`), including headers/footers, notes, text boxes and AutoText | yes (`docx/write.py`), verified fail-closed | **no** — CLI only (`inspect`, `suggest`, `redact`) | `.doc`, `.docm`, encrypted, tracked-changes and macro files are refused; images ≥25% of a page are refused; part names are neutralised. See [docs/DOCX.md](docs/DOCX.md) |
 
 For `.docx` the transport is the same: pre-flight → shared detectors on the extracted text →
@@ -84,6 +84,21 @@ put it on PATH, or point `TESSERACT_CMD` at the executable. `legal-redact inspec
 it was found. Without it, pages with no text layer are refused exactly as before. OCR runs locally
 and offline; its output is cached nowhere. The measured comparison of OCR configurations and an
 alternative engine (RapidOCR) is in [docs/OCR_EVALUATION.md](docs/OCR_EVALUATION.md).
+
+A different reader (a local model, or a paid third-party service through a wrapper you write) can be
+plugged in with `--ocr-engine`/`--ocr-command`; the contract, examples and the two-gate cloud
+procedure are in [docs/OCR_BACKENDS.md](docs/OCR_BACKENDS.md). Engine choice is a compatibility
+option, not an accuracy claim.
+
+> **Cloud/third-party OCR is opt-in and doubly gated.** Third-party (cloud) OCR is selected. Page
+> images of this document will be sent to an external OCR service configured by you, outside this
+> machine. That processing can result in the document being compromised: third-party access,
+> retention and logging, data location and onward transfers, interception, or a provider breach. Do
+> not use cloud OCR for privileged, confidential or client documents unless your firm has approved
+> the service, the transfer is lawful (for example a suitable data processing agreement is in place)
+> and you are authorised to share the document. The local Tesseract default does not carry this
+> risk. A non-local engine is refused unless `--allow-cloud-ocr` is passed for the run, and each
+> document's `PF019` finding must be acknowledged before export.
 
 ## Use
 
@@ -126,6 +141,17 @@ source in Word to see what you are approving; the PDF review page remains the st
 
 Scanned pages are OCR'd automatically where needed. `--no-ocr` (on `inspect`, `suggest`, `redact`
 and `review`) turns OCR off and restores the old fail-closed refusal of pages without a text layer.
+
+A custom OCR engine is selected with `--ocr-engine`/`--ocr-command` on the same four commands
+(`LEGAL_REDACT_OCR_ENGINE` is the environment fallback). A command engine is treated as a
+third-party/cloud service unless declared local with `--ocr-local`; `--allow-cloud-ocr` is required
+for a run that may send page images off the machine, and the per-file cloud finding must be
+acknowledged. See [docs/OCR_BACKENDS.md](docs/OCR_BACKENDS.md) for the JSON contract and examples.
+
+```
+legal-redact inspect scan.pdf --ocr-engine "command:python my_ocr.py" --ocr-local
+legal-redact suggest scan.pdf -o decisions.json --ocr-engine "command:python my_ocr.py" --ocr-local
+```
 
 Policies live in `src/legal_redact/policies/*.toml` (`counterparty` and `auditor` are illustrative,
 not legal advice). Pass your own with `--policy path/to/policy.toml`.
@@ -223,6 +249,12 @@ the caveats and the open problems are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md
   pre-flight), and an error in the output check could hide a leak or, more often, raise a false
   alarm (a fragment of a redacted name is refused on image pages). See `docs/THREAT_MODEL.md` and
   the measured OCR comparison in `docs/OCR_EVALUATION.md`.
+- A custom OCR engine is code you chose to run: its accuracy drives what can be suggested for
+  redaction, and a cloud engine sends page images off this machine (see the warning above and
+  `docs/OCR_BACKENDS.md`). Without Tesseract installed the export verifier must ask the same custom
+  engine to check its own output — the report labels that check `SAME-ENGINE (weaker)` and a
+  pre-flight acknowledgement is required. The engine is pinned in the decision file: re-run
+  `suggest` if you change it between review and export.
 - Not tested: real documents, multi-column, tabular or form-like layouts, hyphenated line ends,
   non-Latin scripts, heavy skew and handwriting.
 - Text laid out vertically or stacked one glyph per line is not reconstructed as a name. On an
@@ -278,20 +310,22 @@ empty shims kept only so the 1.x to 2.x upgrade is safe, and carry no licence of
 | GLiNER weights used: `knowledgator/gliner-pii-base-v1.0`, `urchade/gliner_multi_pii-v1` | Apache-2.0 (per the Hugging Face model cards; check before redistributing) |
 | PyTorch | BSD-style |
 | Tesseract OCR (optional external program, not linked or redistributed) | Apache-2.0 |
+| A custom OCR engine wrapper you configure (not bundled, not required) | your choice; check the engine's licence and data terms before use |
 | `pymupdf4llm`, `pymupdf_layout` (empty shims installed automatically with PyMuPDF 2.1) | No licence declared: they contain metadata only, no code. The 4LLM and Layout code they replace ships inside PyMuPDF itself: AGPL-3.0 or Artifex commercial |
 
 ## Development
 
 ```
-pytest                                   # 199 tests, core dependencies only; OCR tests skip without Tesseract
+pytest                                   # 234 tests, core dependencies only; OCR tests skip without Tesseract
 legal-redact bench-export --n 15         # can the verifier actually fail?
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Held-out benchmark suites are hash-pinned: do not tune on
 them, and create a new one when a change set has been scored. The OCR configuration comparison
 (what was adopted, what was rejected, and why) is in
-[docs/OCR_EVALUATION.md](docs/OCR_EVALUATION.md); the `.docx` design note, refusals and known gaps
-are in [docs/DOCX.md](docs/DOCX.md).
+[docs/OCR_EVALUATION.md](docs/OCR_EVALUATION.md); the pluggable-engine contract and the cloud
+procedure are in [docs/OCR_BACKENDS.md](docs/OCR_BACKENDS.md); the `.docx` design note, refusals and
+known gaps are in [docs/DOCX.md](docs/DOCX.md).
 
 To try the tool without any real documents, follow [docs/TESTING.md](docs/TESTING.md):
 `scripts/make_test_documents.py` writes synthetic PDF and `.docx` fixtures with planted personal

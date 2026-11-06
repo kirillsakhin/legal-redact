@@ -1,6 +1,64 @@
 # Changelog
 
+## 0.4.0 (2026-11-06)
+
+Pluggable OCR engines. The default stays the measured local Tesseract pipeline;
+a validated external adapter lets a user plug in their own reader, including a
+paid third-party service through a wrapper they write. Engine choice is a
+compatibility feature, not an accuracy claim, and the fail-closed guarantees are
+kept.
+
+- New `ocr_backends/` package: an `OcrEngine` contract (`analyze(png, width_pt,
+  height_pt, dpi) -> OcrResult` with normalized word boxes, confidence, engine
+  name/version/local and rotation disclosure), the default `TesseractEngine`
+  (wraps the measured 300 dpi grayscale + OSD pipeline unchanged), and a
+  `CommandEngine` that runs a configured external wrapper once per page with no
+  shell. Its JSON output is strictly validated (shape, finite numbers, boxes
+  inside 0..1, confidence 0..1, non-empty text, required boolean `local`, word
+  and payload caps); any invalid answer, crash or timeout is a refused page, not
+  "no text".
+- CLI/environment: `--ocr-engine`/`--ocr-command` on `inspect`, `suggest`,
+  `redact` and `review`; `LEGAL_REDACT_OCR_ENGINE` fallback. `inspect`, the
+  review page state and the export report show the engine name, version and
+  locality. `--no-ocr` still disables OCR.
+- Cloud/third-party OCR is doubly gated: a non-local engine is refused before
+  any page is rendered unless `--allow-cloud-ocr` is passed for that invocation,
+  and pre-flight emits a REVIEW finding (PF019) carrying the verbatim
+  confidentiality disclaimer that must be acknowledged before export. The review
+  page shows a warning banner and an explicit approval checkbox; the CLI prints
+  the disclaimer on stderr. The local Tesseract default is unaffected.
+- Decision files record the engine, version and locality. Export refuses, with
+  no output, when the engine or declared locality changed since `suggest`, or
+  when a document with OCR pages has a decision file without the pin: re-run
+  `suggest`. A cloud-pinned file needs cloud approval again on the export
+  invocation.
+- Pre-flight adds: PF019 (cloud disclaimer, REVIEW), PF020 (engine
+  unavailable/invalid or cloud not approved, REFUSE), PF021 (Tesseract missing:
+  custom engine would check its own output, REVIEW), PF023 (Tesseract missing:
+  orientation cannot be machine-checked, REVIEW). PF015 now names the engine and
+  locality. PF017/PF018 orientation checks still run when Tesseract exists,
+  whatever engine does the OCR.
+- Verification: V15 prefers Tesseract as the independent output reader whenever
+  it exists, even for custom-engine suggestions; without Tesseract it uses the
+  configured engine and labels the check `SAME-ENGINE (weaker)` -- a leak still
+  fails. V13/V14/V16 unchanged. The export report includes the engine and reader.
+- Tests: 35 new (`tests/test_ocr_backends.py` + fake command-engine fixture),
+  including the cloud gates (a marker proves no wrapper call happens before
+  approval), invalid-output refusals, engine-mismatch refusal, the V15
+  cross-check label, review-page cloud state, and a regression pin for the
+  Tesseract backend's word boxes (234 tests total). Docs: `docs/OCR_BACKENDS.md`
+  (contract, paid-engine and RapidOCR wrapper examples, cloud section),
+  README warning, THREAT_MODEL T31-T36, TESTING.md custom-engine path.
+- Measured on a new suite created for this change set (`ocr-v4-lease7`: 16 scan variants, 9 planted
+  values, suite fingerprint `af724be5f27e5508...`; details in `docs/OCR_EVALUATION.md`): the
+  refactored default Tesseract backend reproduced v0.3.2's reads on **16/16 variants** with identical
+  words and boxes and the same planted-value recall (127/144 both), total OCR time 13.87 s -> 13.96 s
+  (noise). The external-adapter path costs ~55 ms/page on top of the wrapper's own work (trivial
+  wrapper 0.055 s/page; default fast path 0.40 s/page). No comparative accuracy claim is made for
+  third-party engines.
+
 ## 0.3.2 (2026-11-06)
+
 
 Review-page fix found during the first hands-on test of the scanned-PDF flow. No change to
 detection, redaction or verification.
@@ -12,7 +70,6 @@ detection, redaction or verification.
 - A failed export attempt from before the acknowledgements ("Not exported: export blocked: ...")
   stayed on screen after the gate opened, reading as if export were still blocked. The stale
   failure message is now cleared when the gate becomes ready.
-# Changelog
 
 ## 0.3.1 (2026-11-06)
 

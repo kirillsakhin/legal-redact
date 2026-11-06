@@ -126,3 +126,50 @@ evaluation justifies making it the default or a maintained extra now.
 "OCR of the output cannot recover the redacted string" would stop meaning
 "the string is not in the pixels". The tool's fail-closed guarantee requires a
 deterministic local engine.
+
+
+## A note on engine choice (v0.4.0)
+
+The pluggable-engine feature (`--ocr-engine`, see
+[docs/OCR_BACKENDS.md](OCR_BACKENDS.md)) lets a user replace the reader, but it
+does not change anything measured above: the default remains the local Tesseract
+pipeline evaluated in this note, and the numbers in the table describe that
+pipeline only. No comparative accuracy claim is made for any custom or
+third-party engine -- this project did not benchmark them, and a cloud engine's
+quality is your provider's claim, not this tool's. A custom engine changes what
+can be suggested for redaction (a word it does not return cannot be redacted),
+and when Tesseract is absent the export verifier can only ask the same engine to
+check its own output (`SAME-ENGINE (weaker)`, requires an acknowledgement).
+
+## Measured: refactor parity and adapter overhead (v0.4.0)
+
+The pluggable-engine change set touched the OCR code path, so it was scored on a **new** suite
+(ocr-v4-lease7: template lease, seed 7 -- deliberately different from the 0.2.0 suite, which was
+spent; 16 scan variants, clean + degraded + rotated, 9 planted personal values; suite fingerprint
+sha256 `AF724BE5F27E5508CCBB654AD0E519F67AB1E1EC6A6CAE9367820F96D6E18D54`). The harness and fixtures live in the development workspace
+(`_legalredact_publish\ocr_v4_eval\`) and do not ship. Method: run the public
+`extract_pages(ocr=True)` on the same 16 image-only PDFs with the v0.3.2 tree and with the v0.4.0
+tree, then compare planted-value recall, the returned word list (text + rectangle, rounded to 0.01 pt)
+and wall-clock seconds per page.
+
+| | v0.3.2 | v0.4.0 |
+|---|---|---|
+| Planted-value recall (16 variants x 9) | 127/144 | 127/144 |
+| Variants with identical word reads | -- | **16/16** |
+| Total OCR time, 16 pages | 13.87 s | 13.96 s |
+
+The default Tesseract backend is byte-for-byte behaviour-preserving: every variant returned the same
+words with the same boxes, recall was identical (including the hard cases: `hardblur` 4/9,
+`lowdpi80` 8/9, `saltpepper` 7/9, `combined` 0/9 -- the review gate, not a retry, is the control
+there), and the total time difference is inside run-to-run noise.
+
+**Adapter overhead.** On one clean page (72 words): default fast path 0.40 s/page; the PNG/protocol
+entry point 0.43 s/page; the `command` engine with a trivial wrapper that prints precomputed words
+0.055 s/page (best of 5). So the external-adapter path itself (process spawn, PNG handoff, JSON parse)
+is tens of milliseconds per page; a real wrapper's own recognition time dominates. A wrapper that also
+decodes the image per word measured 0.22 s/page, consistent with that split.
+
+**What this does not say.** No comparative accuracy claim is made for any third-party engine: the
+suite above scores the *default* pipeline's refactor. The only alternative engine measured by this
+project remains RapidOCR in the 0.2.0 table above -- and that measurement was of its own pipeline, not
+through the new adapter; a wrapped engine's quality is whatever its provider delivers.
