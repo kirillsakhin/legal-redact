@@ -159,6 +159,9 @@ skew and handwriting are not handled. See `docs/THREAT_MODEL.md` T14-T18.
 ## Not measured
 
 - Real documents of any kind. Human reviewers (the reviewer error rates are simulated).
+- `.docx`: unit-tested (199 tests, including adversarial fixtures) and independently audited, but
+  **not benchmarked** — no comparable `.docx` redaction benchmark was run. Its guarantees are
+  fail-closed refusals and the verifier's independent re-read, not a measured leak rate.
 - Commercial tools, LLM-based redaction, TypeSafe Jev and AutoTrust JEV-9B. Other open-source
   tools are compared separately below.
 - Real client email domains: the `.test` domain in the synthetic suites is an artefact that

@@ -2,20 +2,22 @@
 
 [![CI](https://github.com/kirillsakhin/legal-redact/actions/workflows/ci.yml/badge.svg)](https://github.com/kirillsakhin/legal-redact/actions/workflows/ci.yml)
 
-Review-first redaction of personal data in PDF contracts, with independent checks of the
-exported file. Local and offline by default.
+Review-first redaction of personal data in PDF and Word (`.docx`) contracts, with independent
+checks of the exported file. Local and offline by default.
 
-> **Status: pre-alpha (0.2.0).** Developed and tested on synthetic documents and public contract
+> **Status: pre-alpha (0.3.0).** Developed and tested on synthetic documents and public contract
 > text; not tested on real client documents. It does not make legal determinations, and removing
 > personal data is not anonymisation or GDPR compliance.
 
-A lawyer opens a short English, text-based PDF contract, picks a disclosure purpose (a policy),
-reviews what the tool suggests and why, and exports a separate redacted copy. The model
+A lawyer opens a short English, text-based PDF or `.docx` contract, picks a disclosure purpose (a
+policy), reviews what the tool suggests and why, and exports a separate redacted copy. The model
 recommends; the lawyer decides. Drawing a black box over text is not redaction, so the export
-removes the content and then checks the result with different libraries than the ones that
-wrote it. Scanned pages with no text layer are read with local English OCR into the same word
-model, so the same review flow works; they are exported as re-rasterised images with the
-redaction burnt into the pixels.
+removes the content and then checks the result with different libraries than the ones that wrote
+it. Scanned PDF pages with no text layer are read with local English OCR into the same word model,
+so the same review flow works; they are exported as re-rasterised images with the redaction burnt
+into the pixels. `.docx` files are exported as `.docx`: the accepted characters are replaced in
+the runs that held them, and comments, hidden text carriers and metadata are removed (see
+[docs/DOCX.md](docs/DOCX.md)).
 
 ## How it works
 
@@ -31,6 +33,24 @@ redaction burnt into the pixels.
 
 Reports and decision files contain categories, page numbers, boxes and counts, never document text.
 
+For `.docx`, stages 0/1/4/5 run through the `docx/` package: extraction builds the same synthetic
+page/offset model from `w:t` runs in the body, headers, footers, notes and text boxes, so the
+detectors and the review gate are reused unchanged; the writer edits the OOXML with lxml and the
+verifier re-reads it with other stdlib readers. The PDF pipeline's behaviour is untouched.
+
+## Supported formats
+
+| Format | Read | Export | Review page | Notes |
+|---|---|---|---|---|
+| PDF, text layer | yes | yes (`redact.py`) | yes | the original pipeline; unchanged in 0.3.0 |
+| PDF, scanned | OCR (English) when Tesseract is available | yes, re-rasterised image pages | yes | see `docs/OCR_EVALUATION.md` |
+| `.docx` (OOXML Word) | yes (`docx/`), including headers/footers, notes, text boxes and AutoText | yes (`docx/write.py`), verified fail-closed | **no** — CLI only (`inspect`, `suggest`, `redact`) | `.doc`, `.docm`, encrypted, tracked-changes and macro files are refused; images ≥25% of a page are refused; part names are neutralised. See [docs/DOCX.md](docs/DOCX.md) |
+
+For `.docx` the transport is the same: pre-flight → shared detectors on the extracted text →
+decision file → export → independent verification. The browser review page renders PDF pages, so
+`legal-redact review` says so and stops; DOCX review is through the decision file (edit each
+`"status"` to `"accepted"`/`"rejected"`).
+
 ## Install
 
 Requires Python 3.11 or later. Developed on 3.14; the same suite passes on 3.11, 3.12 and 3.13 on
@@ -42,6 +62,10 @@ python -m venv .venv
 pip install -e ".[dev]"    # core: rules detector, writer, verifier, review page
 pytest
 ```
+
+`lxml` is a core dependency (the DOCX writer/editor); `python-docx` is in the `dev` extra for
+tests only — one test uses it as an independent third-party reader of the exported `.docx`. The
+package itself never imports `python-docx`.
 
 For the full ensemble (Presidio + GLiNER):
 
@@ -83,6 +107,23 @@ legal-redact suggest contract.pdf -o decisions.json --policy counterparty
 legal-redact redact contract.pdf --decisions decisions.json -o contract.redacted.pdf
 ```
 
+`.docx` uses the same three commands; `inspect`, `suggest` and `redact` detect the format from the
+file. The review page cannot show Word pages, so `review` is PDF-only:
+
+```
+legal-redact inspect contract.docx
+legal-redact suggest contract.docx -o decisions.json --policy counterparty
+# edit statuses; acknowledge pre-flight REVIEW codes you accept, e.g. --ack PF114
+legal-redact redact contract.docx --decisions decisions.json -o contract.redacted.docx --ack PF114
+```
+
+A `.docx` pre-flight that reports a REVIEW code (comments being stripped, hidden-text carriers, small
+images, custom XML) blocks export until that code is acknowledged with `--ack`. REFUSE findings
+(encrypted, `.doc`/`.docm`, macros, tracked changes, embedded OLE objects, unknown parts, malformed
+packages, large images, a part/presentation name that reads like an identifier) always block export.
+The `.docx` review step is batch-style — the decision file carries no document text, so open the
+source in Word to see what you are approving; the PDF review page remains the stronger workflow.
+
 Scanned pages are OCR'd automatically where needed. `--no-ocr` (on `inspect`, `suggest`, `redact`
 and `review`) turns OCR off and restores the old fail-closed refusal of pages without a text layer.
 
@@ -105,6 +146,17 @@ unusual font encodings, digital signatures (redaction invalidates them), and ind
 (a job title plus a company can identify someone). For OCR'd pages, a character Tesseract misreads is
 invisible to both the detectors and the export check, and handwriting, stamps, signatures and photos
 are not read at all. Every report lists these.
+
+For `.docx` the verifier reads the output with stdlib `zipfile`, `xml.etree.ElementTree` and raw-byte
+scanning — not with the lxml writer — and withholds the file when: a redacted passage is still found
+in the extracted text, the attributes or the raw bytes of any part (V102/V103); a comment, tracked
+change, macro, embedded object, external relationship, alternate-text/field-code/hyperlink carrier or
+text-carrying XML construct survives (V104); document properties are not empty (V105); paragraphs,
+runs, image/font content or any part the writer may not edit changed (V106); content types or
+relationship targets no longer resolve (V107); or a source-chosen part name survives instead of a
+generated neutral one (V108). Comments and links being *removed*, images being copied, small-image
+review and presentation-only text are intentional and surfaced at pre-flight (PF111/PF112/PF113/
+PF123/PF124/PF126); see [docs/DOCX.md](docs/DOCX.md) for the full list and the known gaps.
 
 ## Results, briefly
 
@@ -132,9 +184,31 @@ the caveats and the open problems are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md
 
 ## Limitations
 
-- English text-based PDF contracts and English printed scans (OCR). No DOCX, no other languages.
-  Handwriting, signatures, stamps and photographs are not detected; pre-flight flags every OCR page
-  for a human look and says a name OCR cannot read cannot be redacted.
+- English text-based PDF contracts, English printed scans (OCR) and English `.docx` documents. No
+  other languages. Handwriting, signatures, stamps and photographs are not detected; pre-flight flags
+  every OCR page for a human look and says a name OCR cannot read cannot be redacted.
+- `.docx` support is deliberately narrow and fail-closed. Refused: encrypted files, legacy `.doc`,
+  `.docm`/`.dotx`, macros/ActiveX, tracked changes (accept or reject them in Word first), embedded
+  OLE objects, legacy form fields, `.docx`-external content (`altChunk`/subdocuments), unknown parts
+  (charts, SmartArt, glossary), text outside the supported containers, and packages whose structure
+  this tool does not recognise. Read and redacted: body text, headers, footers, footnotes, endnotes
+  and text boxes (including nested and alternate-content copies). Removed on export: comments,
+  custom XML, document-property bags, page thumbnails, alternate text/tooltips/table captions, field
+  instructions, hyperlink targets (links become plain text), content-control metadata and document
+  variables. See [docs/DOCX.md](docs/DOCX.md).
+- `.docx` known gaps: text inside images is not read — an image covering at least 25% of a page is
+  REFUSED (it may be a pasted scan; convert that page to PDF and redact it as a scan), smaller ones
+  are flagged for review and kept unchanged; presentation-only text in copied parts (style names,
+  list-numbering format text, embedded font family names, theme/settings values) is not inspected
+  or redacted, though structured identifiers in it refuse the file — PF126 reports how much exists
+  and is informational, so a person-shaped name in a style or font name is disclosed but does not
+  block a batch export; numeric values are only treated
+  as geometry in the known `wp:posOffset`/`wp14:pctSize` layout elements and every other numeric
+  text node is refused; a decomposed-Unicode (NFD) name can evade detection (same gap as PDF); the
+  browser review page is PDF-only, so **`.docx` review is batch-style and weaker** — the decision
+  file contains no document text, so the lawyer must open the source in Word to review it.
+  Over-redaction is possible where Word stores the same content twice (AlternateContent choice and
+  fallback are both redacted).
 - Scans that are sideways or upside down cost one extra OCR pass: pre-flight runs Tesseract's
   orientation detector on every page it will OCR (about 0.4 s per scanned page), and a page whose
   orientation cannot be determined is a REVIEW finding (PF018), never a silent guess. A detected
@@ -193,9 +267,11 @@ empty shims kept only so the 1.x to 2.x upgrade is safe, and carry no licence of
 | Component | Licence |
 |---|---|
 | PyMuPDF | AGPL-3.0 or Artifex commercial |
+| lxml | BSD-3-Clause |
 | pdfminer.six | MIT |
 | pypdfium2 | BSD-3-Clause / Apache-2.0 |
 | pikepdf | MPL-2.0 |
+| python-docx (tests only) | MIT |
 | Presidio | MIT |
 | spaCy and `en_core_web_*` models | MIT |
 | GLiNER (code) | Apache-2.0 |
@@ -207,11 +283,12 @@ empty shims kept only so the 1.x to 2.x upgrade is safe, and carry no licence of
 ## Development
 
 ```
-pytest                                   # 151 tests, core dependencies only; OCR tests skip without Tesseract
+pytest                                   # 199 tests, core dependencies only; OCR tests skip without Tesseract
 legal-redact bench-export --n 15         # can the verifier actually fail?
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Held-out benchmark suites are hash-pinned: do not tune on
 them, and create a new one when a change set has been scored. The OCR configuration comparison
 (what was adopted, what was rejected, and why) is in
-[docs/OCR_EVALUATION.md](docs/OCR_EVALUATION.md).
+[docs/OCR_EVALUATION.md](docs/OCR_EVALUATION.md); the `.docx` design note, refusals and known gaps
+are in [docs/DOCX.md](docs/DOCX.md).

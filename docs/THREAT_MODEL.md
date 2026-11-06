@@ -1,12 +1,13 @@
-# Threat model (v0.2)
+# Threat model (v0.3)
 
-What can go wrong when a lawyer shares a redacted PDF, and what this tool does about it.
-"Tested" means an automated test or the seeded-leak suite (`legal-redact bench-export`) covers
-it. It does not mean the route is proven closed: the suite only covers routes we thought of.
+What can go wrong when a lawyer shares a redacted PDF or Word (`.docx`) contract, and what this tool
+does about it. "Tested" means an automated test or the seeded-leak suite (`legal-redact
+bench-export`) covers it. It does not mean the route is proven closed: the suite only covers routes
+we thought of.
 
 ## Assets
-Personal data of natural persons inside the PDF (names, contact details, IDs, bank details,
-dates of birth), in any place the PDF can hold it, and the confidential document itself while the
+Personal data of natural persons inside the document (names, contact details, IDs, bank details,
+dates of birth), in any place the format can hold it, and the confidential document itself while the
 review page is open.
 
 ## Failure modes
@@ -32,14 +33,49 @@ review page is open.
 | T17 | OCR text leaking through our own artefacts | The recognised words end up in a report, decision file or the review API | OCR words stay in memory as needles; decision files store offsets and boxes only; reports carry categories, counts and page numbers | tested (scan decision round-trip and report checked for document text) |
 | T18 | Mis-oriented scan | A sideways or upside-down page: OCR reads garbage (measured mean confidence ~30 vs ~95 upright), so nothing is redacted while the page looks reviewed | When a read looks unreliable, Tesseract OSD decides the rotation, the page is re-read upright and every box is mapped back to the original page coordinates; pre-flight runs the same OSD check on every page to be OCR'd and emits a REVIEW finding: PF017 (rotated; auto-corrected) or PF018 (orientation undeterminable; check the page yourself). No page is silently mis-read | tested: 90/180-degree scans went 0/9 -> 9/9 planted values; mutation test disables OSD and shows recall collapses; PF017/PF018 covered by tests |
 
-## Out of scope for v0.2
-DOCX, non-English OCR, handwriting and signature detection, detecting text inside pictures on a
-page that has its own text layer, digital signatures (redaction invalidates them), a legal
-conclusion that a document is anonymous or GDPR-compliant.
+## DOCX (v0.3)
+
+The `.docx` writer edits OOXML rather than repainting a page. The routes below are the DOCX
+analogue of T1-T9; each writer rule has a verifier check and a test that makes the check fail.
+`docs/DOCX.md` describes what is read, refused and verified.
+
+| # | Failure | Example | Mitigation | Status |
+|---|---|---|---|---|
+| T19 | Cosmetic redaction / run boundary | A name split across two `w:t` runs; a box that only looks removed | Extraction indexes every character against the `w:t` element that holds it; the writer replaces exactly those characters with U+2588 (same count, `xml:space="preserve"`) in every overlapping run; the verifier re-extracts text with ElementTree and scans every part's raw bytes for the redacted needle | tested: split-run name is gone from text and from the XML; mutation test disables run replacement and the verifier withholds the file |
+| T20 | Hidden text carriers | Alternate text (`docPr descr`), tooltips, table captions, field instructions (`w:instrText`, `w:fldSimple w:instr`), hyperlink `mailto:` targets, content-control alias/tag, inline custom-XML attributes, bookmark names | Pre-flight counts them and emits REVIEW PF111 (they are not body text, so the detectors never see them); the writer removes them (hyperlinks unwrap to plain text, external relationships are dropped, bookmark names are replaced); the verifier fails V104 if any survives | tested: every carrier above is planted, then absent from the output; unit test + CLI end-to-end |
+| T21 | Comments | Comment text and comment author names are personal data and are not in the page body | Pre-flight REVIEW PF112; the writer removes `word/comments*.xml`, `word/people.xml`, comment range marks and references and their relationships/content types; the verifier checks no comment part or mark survives | tested: comments stripped after acknowledgement; mutation test keeps the comment part and the verifier withholds the file |
+| T22 | Tracked changes | Deleted text (`w:delText`) and revisions can hide the original wording | Pre-flight REFUSE PF105 on insertion/deletion/move/format-change elements. The tool never resolves revisions; the lawyer accepts/rejects them in Word first | tested |
+| T23 | Metadata | `docProps/core.xml` (creator, editor, title), `app.xml` (company, manager), `custom.xml`, `people.xml`, page thumbnails, document variables, mail-merge/attached-template settings | Pre-flight INFO PF116/PF117; the writer rebuilds core/app as empty property parts (no value, child element name or attribute survives), drops custom properties, people, thumbnails and document variables, removes mail-merge/template settings; the verifier fails V105 if any value, child or attribute is non-empty, or any of those parts survives | tested: metadata scrubbed; mutation test disables the scrub and the verifier withholds the file |
+| T24 | Embedded objects, macros and unknown parts | `vbaProject.bin`, `word/embeddings/*`, ActiveX, `altChunk`, subdocuments, charts/SmartArt, an image/font file with an unrecognised extension, legacy form fields | Pre-flight REFUSE: PF103 macros, PF106 embedded objects, PF107 parts outside the recognised set (including image/font extensions outside the allowlist), PF119 `altChunk`/subdocuments, PF122 legacy form data. No unknown part is ever copied to the output; the writer re-checks and refuses rather than guesses. (AutoText/glossary is a recognised text part and is read + redacted.) | tested (one case per code) |
+| T25 | Text outside the supported containers | A `w:t` directly under the body, text in an XML comment / processing instruction / DOCTYPE / CDATA outside a text part, a name hidden in content-type or relationship attributes, numeric text hidden in an unknown element inside a drawing | Extraction enforces a coverage invariant: every text node must be in a `w:t` the writer can rewrite, in a field-instruction element the writer removes, or be numeric text in one explicitly allowlisted drawing-layout element (`wp:posOffset` under `wp:positionH`/`positionV`, `wp14:pctWidth`/`pctHeight` under `wp14:sizeRelH`/`sizeRelV`, plausible range only). Everything else is refused (PF108/PF121). Relationship/content-type attributes must match the format's structural vocabulary | tested: each construct refused with its code; anchored/floating drawings with real `wp:posOffset` values are accepted and export |
+| T26 | Text in pixels / images | Screenshots, signature images, logos, pasted scans | An image covering **at least 25% of a page** is REFUSED (PF123): a .docx export cannot remove text burnt into pixels, so the page must be redacted as a PDF/OCR page. Smaller images are REVIEW PF113 — the lawyer acknowledges that text inside them is not read; images are copied unchanged (byte-identical, neutral file name), so the tool never silently re-encodes them | tested: large image refused with no output; small image blocks export until acknowledged and then copies byte-identically; **open by nature**: a name inside an acknowledged small image is not redacted |
+| T27 | Writer damages the document | A `.docx` that no longer opens, or content silently dropped | The writer preserves ZIP entry order/compression, copies every part it does not edit byte-for-byte, keeps paragraph and run counts, renames bookmarks instead of dropping them, and removes only the carriers it reports; the verifier checks byte-identity of untouched parts, paragraph/run counts, content types and relationship targets (V106/V107). Removed by design and reported: comments, links (plain text), field instructions, custom XML | tested: python-docx can open the output; integrity checks fail when a part is misplaced |
+| T28 | Leakage through our own reports | A report or decision file quotes a name | Findings and reports carry counts, codes and structural labels only; decision files store container numbers and offsets, never text | tested (canary checks on report, decision file and CLI output) |
+| T29 | Package metadata made of text | A person's name as an image filename (`word/media/Ivanova_passport_...png`), a card number or person name as an embedded-font family name in `word/fontTable.xml`, a name as a style name or list-numbering format string | Image and embedded-font parts are renamed to generated neutral names on export, with relationships and content types updated; the verifier fails V106/V108 if a source-chosen name survives. Part names and presentation-only names are scanned with the structured-identifier rules and the file is REFUSED (PF124) if one reads like an e-mail/ID/IBAN/card. Style/font/list-numbering names that look like a *person* rather than an identifier are copied verbatim and reported by PF126 (INFO) — renaming style or font definitions would change the document's appearance | tested: media/font names renamed and verified; identifier-shaped names refused; person-shaped presentation names disclosed (documented limit) |
+| T30 | Unicode normalisation | A name written in decomposed form (NFD: base letter + combining mark), zero-width characters or full-width forms | The detectors see the extracted code points; the PDF verifier's normalisation (NFKC, casefold, whitespace collapse) covers full-width and compatibility forms, and the DOCX verifier checks needles the same way. **NFD is a detection-level gap not compensated here**: the extracted offsets must map to runs, so the DOCX extractor is not normalised (doing so would break redaction geometry). Documented as a known limitation and future detection work; affects PDF identically | **open**: a decomposed name can be missed by detection and therefore not redacted; documented in README and docs/DOCX.md |
+
+## Out of scope for v0.3
+Non-English OCR; handwriting and signature detection; detecting text inside pictures on a page or in
+a `.docx` image (large images are refused, small ones are acknowledged review items); digital
+signatures (redaction invalidates them); `.docm`/macro-enabled and encrypted files; legacy `.doc`
+(refused, convert first); tracked changes (refused, resolve in Word first); `.docx` embeds of
+charts/SmartArt/OLE (refused); precise removal of text hidden in style names, embedded-font family
+names, list-numbering format text or unusual theme/settings values (copied verbatim, reported by
+PF126; identifier-shaped values refuse the file); decomposed-Unicode (NFD) evasion of detection;
+a legal conclusion that a document is anonymous or GDPR-compliant.
 
 ## Refuse vs review
-- **Refuse** (export blocked): encrypted, no extractable text when OCR is unavailable or disabled
-  (`--no-ocr`), embedded files, XFA forms.
-- **Review** (lawyer must acknowledge): OCR use (PF003/PF004), what OCR cannot see (PF016),
+- **Refuse** (export blocked, PDF): encrypted, no extractable text when OCR is unavailable or
+  disabled (`--no-ocr`), embedded files, XFA forms.
+- **Refuse** (export blocked, DOCX): encrypted container, legacy `.doc`, `.docm`/`.dotx`, macros or
+  ActiveX, tracked changes, embedded OLE/package objects, `altChunk`/subdocuments, legacy form data,
+  unknown parts, text outside the supported containers, malformed packages, text-carrying XML
+  constructs, images covering ≥25% of a page (PF123), and part/presentation names that read like a
+  structured personal identifier (PF124).
+- **Review** (lawyer must acknowledge, PDF): OCR use (PF003/PF004), what OCR cannot see (PF016),
   rotated scans it will correct (PF017), scans whose orientation could not be determined (PF018),
   images on text pages, annotations, form fields, JavaScript, layers, bookmarks.
+- **Review** (lawyer must acknowledge, DOCX): hidden-text carriers being removed (PF111), comments
+  being removed (PF112), small images not read (PF113), custom XML being removed (PF114).
+- **Info** (no decision needed, DOCX): what was read (PF118), metadata that will be scrubbed
+  (PF116/PF117), presentation-only text that is copied verbatim (PF126).

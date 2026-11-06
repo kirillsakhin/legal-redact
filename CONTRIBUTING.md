@@ -29,7 +29,9 @@ pytest
 ```
 
 The `ml` extra (`pip install -e ".[ml]"` plus `python -m spacy download en_core_web_lg`) is only
-needed to run the Presidio and GLiNER benchmark arms.
+needed to run the Presidio and GLiNER benchmark arms. The `dev` extra includes `python-docx`, which
+only the DOCX tests use (as an independent third-party reader of exported files); the package itself
+never imports it.
 
 ## Style
 

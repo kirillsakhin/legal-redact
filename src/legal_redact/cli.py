@@ -3,11 +3,15 @@
 Output never contains document text; only counts, codes and page numbers.
 OCR (local Tesseract) is used automatically on pages with no usable text layer;
 `--no-ocr` on every command restores the old fail-closed refusal of scans.
+
+PDFs and .docx files are both accepted by `inspect`, `suggest` and `redact`.
+The browser review page renders PDF pages, so `review` stays PDF-only.
 """
 from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 import pymupdf
 
@@ -15,8 +19,56 @@ from .extract import extract_pages
 from .ocr import ocr_available, ocr_version
 from .preflight import blocked, preflight
 
+# Word container extensions this tool routes to the DOCX pipeline: .docx is the
+# only supported one, the others are refused there with a specific finding.
+_DOCX_SUFFIXES = {".docx", ".doc", ".docm", ".dotx", ".dotm"}
+
+
+def _pipeline_format(path: str) -> str:
+    """'pdf' or 'docx': extension first, then file magic for extensionless files."""
+    suffix = Path(path).suffix.lower()
+    if suffix == ".pdf":
+        return "pdf"
+    if suffix in _DOCX_SUFFIXES:
+        return "docx"
+    try:
+        from .docx.package import (FileKind, file_kind)
+        kind = file_kind(path)
+    except Exception:
+        return "pdf"
+    if kind in (FileKind.OOXML, FileKind.ENCRYPTED_OOXML, FileKind.LEGACY_DOC,
+                FileKind.OTHER_OLE):
+        return "docx"
+    return "pdf"
+
+
+def _inspect_docx(path: str) -> int:
+    from .docx.package import DocxError
+    from .docx.pipeline import summary_docx
+    from .docx.preflight import blocked as blocked_docx, preflight_docx
+    findings = preflight_docx(path)
+    print("format=docx")
+    if not blocked_docx(findings):
+        try:
+            counts = summary_docx(path)
+        except DocxError:
+            pass                       # the findings below say why
+        else:
+            print(f"text_parts={counts['text_parts']} containers={counts['containers']} "
+                  f"characters={counts['characters']}")
+    for f in findings:
+        print(f"{f.severity.value.upper():7} {f.code}: {f.message}")
+    if blocked_docx(findings):
+        print("RESULT: export would be refused")
+        return 1
+    print("RESULT: supported (review the findings above)")
+    return 0
+
+
 
 def _inspect(path: str, ocr: bool = True) -> int:
+    if _pipeline_format(path) == "docx":
+        return _inspect_docx(path)
     try:
         doc = pymupdf.open(path)
     except Exception as exc:  # corrupt or not a PDF
@@ -64,12 +116,16 @@ def _detector(name: str):
 
 
 def _suggest(args) -> int:
-    from .pipeline import save_decisions, suggest
+    from .pipeline import save_decisions
     from .policy import load_policy
     det = _detector(args.detector)
     if det is None:
         return 2
-    s = suggest(args.pdf, det, load_policy(args.policy), ocr=not args.no_ocr)
+    if _pipeline_format(args.pdf) == "docx":
+        from .docx.pipeline import suggest_docx as suggest_fn
+    else:
+        from .pipeline import suggest as suggest_fn
+    s = suggest_fn(args.pdf, det, load_policy(args.policy), ocr=not args.no_ocr)
     save_decisions(s, args.out)
     r = s.report()
     print(f"decisions written: {len(s.decisions)}  status={r['by_status']}")
@@ -132,6 +188,11 @@ def _h2h(args) -> int:
 
 def _review(args) -> int:
     from pathlib import Path
+    if _pipeline_format(args.pdf) == "docx":
+        print("The review page renders PDF pages, so it does not support .docx yet.")
+        print("For a .docx file use: legal-redact inspect | suggest | redact, and set each")
+        print('decision\'s "status" to "accepted" or "rejected" in the decisions JSON.')
+        return 2
     from .pipeline import load_decisions, save_decisions, suggest
     from .policy import load_policy
     from .review_server import serve
@@ -152,18 +213,28 @@ def _review(args) -> int:
 
 
 def _redact(args) -> int:
-    from .pipeline import ExportRefused, export, load_decisions
-    s = load_decisions(args.pdf, args.decisions, ocr=not args.no_ocr)
+    from .pipeline import ExportRefused
+    docx = _pipeline_format(args.pdf) == "docx"
+    if docx:
+        from .docx.pipeline import export_docx as export_fn
+        from .docx.pipeline import load_decisions_docx as load_fn
+    else:
+        from .pipeline import export as export_fn
+        from .pipeline import load_decisions as load_fn
+    s = load_fn(args.pdf, args.decisions, ocr=not args.no_ocr)
     for code in filter(None, args.ack.split(",")):
         s.acknowledge(code.strip())
     if args.accept_proposed:
         print(f"bulk-accepted {s.accept_all_proposed_redactions()} proposed redaction(s)")
     if args.accept_repeats:
-        from .pipeline import add_repeats
-        print(f"accepted {add_repeats(args.pdf, s, accept=True, ocr=not args.no_ocr)} "
-              "other occurrence(s) of accepted text")
+        if docx:
+            print("note: --accept-repeats is not implemented for .docx yet; ignored")
+        else:
+            from .pipeline import add_repeats
+            print(f"accepted {add_repeats(args.pdf, s, accept=True, ocr=not args.no_ocr)} "
+                  "other occurrence(s) of accepted text")
     try:
-        rep = export(args.pdf, args.out, s, ocr=not args.no_ocr)
+        rep = export_fn(args.pdf, args.out, s, ocr=not args.no_ocr)
     except ExportRefused as exc:
         print(f"REFUSED: {exc}")
         if exc.report:
@@ -179,10 +250,11 @@ def _redact(args) -> int:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="legal-redact")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    ins = sub.add_parser("inspect", help="pre-flight check of a PDF")
-    ins.add_argument("pdf")
+    ins = sub.add_parser("inspect", help="pre-flight check of a PDF or .docx file")
+    ins.add_argument("pdf", help="PDF or .docx file")
     ins.add_argument("--no-ocr", action="store_true",
-                     help="do not use OCR; refuse pages without a text layer (old behaviour)")
+                     help="do not use OCR; refuse pages without a text layer (old behaviour; "
+                          "no effect on .docx)")
     bn = sub.add_parser("bench", help="run the synthetic benchmark")
     bn.add_argument("--detector", nargs="+", default=["rules"],
                     choices=["rules", "presidio", "presidio-lg", "gliner-kn", "gliner-ur",
@@ -194,23 +266,25 @@ def main(argv: list[str] | None = None) -> int:
     bn.add_argument("--seed", type=int, default=0)
     bn.add_argument("--show-misses", action="store_true")
     sg = sub.add_parser("suggest", help="detect and write a decision file (no document text in it)")
-    sg.add_argument("pdf")
+    sg.add_argument("pdf", help="PDF or .docx file")
     sg.add_argument("-o", "--out", required=True, help="decisions JSON to write")
     sg.add_argument("--policy", default="counterparty")
     sg.add_argument("--detector", default="ensemble", choices=["ensemble", "rules"])
     sg.add_argument("--no-ocr", action="store_true",
-                    help="do not use OCR; refuse pages without a text layer (old behaviour)")
+                    help="do not use OCR; refuse pages without a text layer (old behaviour; "
+                         "no effect on .docx)")
     rd = sub.add_parser("redact", help="export a redacted copy after review, then verify it")
-    rd.add_argument("pdf")
+    rd.add_argument("pdf", help="PDF or .docx file")
     rd.add_argument("--decisions", required=True)
     rd.add_argument("-o", "--out", required=True)
     rd.add_argument("--ack", default="", help="comma-separated pre-flight REVIEW codes you acknowledge")
     rd.add_argument("--accept-proposed", action="store_true",
                     help="bulk-accept pending items the policy proposes to redact (review items stay pending)")
     rd.add_argument("--no-ocr", action="store_true",
-                    help="do not use OCR; refuse pages without a text layer (old behaviour)")
+                    help="do not use OCR; refuse pages without a text layer (old behaviour; "
+                         "no effect on .docx)")
     rv = sub.add_parser("review", help="open the local review page (accept / reject / add boxes, export)")
-    rv.add_argument("pdf")
+    rv.add_argument("pdf", help="PDF file (the review page is PDF-only for now)")
     rv.add_argument("--policy", default="counterparty")
     rv.add_argument("--detector", default="ensemble", choices=["ensemble", "rules"])
     rv.add_argument("--decisions", default=None,

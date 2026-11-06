@@ -1,5 +1,73 @@
 # Changelog
 
+## 0.3.0 (2026-11-06)
+
+Word (`.docx`) support as the second input format, with the same review gate and fail-closed
+independent verification as PDF. The PDF pipeline's behaviour is unchanged.
+
+- New `docx/` package. Extraction: file-type detection; ZIP/OOXML package validation (duplicate
+  names, encrypted entries, size limits, CRC, part-name vocabulary); text from `word/document.xml`,
+  `header*.xml`, `footer*.xml`, `footnotes.xml`, `endnotes.xml`, `word/glossary/document.xml` and
+  `w:txbxContent` text boxes inside any of them, with a stable per-run offset index (paragraph
+  boundaries are newlines). Floating/anchored drawings are supported: only numeric text in the
+  explicitly allowlisted drawing-layout elements (`wp:posOffset` under a position element,
+  `wp14:pctWidth`/`pctHeight` under a size-relative element, plausible range) is treated as
+  geometry — any other text outside `w:t` is refused. The shared detectors run on synthetic
+  `PageText` objects; suggestion offsets map back to the `w:t` elements that held the characters.
+  Decision files are the same JSON as for PDF (container numbers and offsets, no text).
+- Pre-flight (`docx/preflight.py`, codes PF101-PF126): REFUSE on encrypted containers, legacy
+  `.doc`, `.docm`/`.dotx`, macros/ActiveX, tracked changes, embedded OLE/package objects,
+  `altChunk`/subdocuments, legacy form fields, parts outside the recognised set (including image/font
+  extensions outside the allowlist), text outside the supported containers (including numeric text
+  in unknown elements), malformed packages, text-carrying XML constructs (comments, processing
+  instructions, DOCTYPE, CDATA outside text parts, hidden text in content-type/relationship
+  attributes), images covering at least 25% of a page, and part/presentation names that read like a
+  structured identifier. REVIEW on comments, hidden-text carriers, small images and custom XML.
+  INFO on metadata scrubbing, what was read, and presentation-only text copied verbatim
+  (style names, list-numbering format values, font family names). Findings never contain document
+  text.
+- Writer (`docx/write.py`, lxml): every character of an accepted span becomes U+2588 in its own run
+  (with `xml:space="preserve"`), so a span crossing runs leaves no original character anywhere.
+  Removes comments/comment marks/comment-author names, tracked-change residue, alternate
+  text/tooltips/table captions, field instructions, hyperlinks (unwrapped to plain text, external
+  relationships dropped), content-control metadata, custom XML, document variables, mail-merge and
+  attached-template settings; rebuilds core/app property parts empty; drops custom properties,
+  people.xml and page thumbnails; neutralises bookmark names; renames image and embedded-font parts
+  to generated neutral names and rewrites relationships/content types; copies every other part
+  byte-for-byte and preserves ZIP entry order/compression.
+- Verifier (`docx/verify.py`) reads the output with stdlib `zipfile` + `xml.etree.ElementTree` +
+  raw-byte scanning, never lxml, and withholds the file on any failure: redacted needles in text,
+  attributes or raw part bytes (V102/V103); surviving comments/revisions/macros/embedded
+  objects/external links/hidden carriers (V104); non-empty document properties (V105); changed
+  paragraph/run counts, modified image/font content, source-chosen part names or edited/added/
+  dropped parts that should be byte-identical (V106/V108); unresolved content types or relationship
+  targets (V107). Every report lists the DOCX limits (images, presentation-only text, numeric layout
+  values, decomposed Unicode, indirect identification, ...).
+- CLI: `inspect`, `suggest` and `redact` accept `.docx` by extension/magic; `review` (the browser
+  page) stays PDF-only with a clear message, and the docs say DOCX review is batch-style and weaker
+  because the decision file carries no document text. Same gate: export blocked until every
+  suggestion is decided and every REVIEW finding acknowledged (`--ack PF114` etc.);
+  `--accept-proposed` works.
+- Dependencies: `lxml` added to core; `python-docx` added to the `dev` extra for tests only (one
+  test opens the output with it as a third-party reader; the package never imports it).
+- Tests: 48 new (`tests/test_docx.py`, 199 total): plain document, name split across runs,
+  header/footer/footnote, text boxes (inline, floating/anchored, nested, alternate-content copies),
+  AutoText/glossary, comments stripped, metadata scrubbed, hidden carriers removed, small images
+  flagged and copied unchanged with neutral names, large images refused, embedded fonts renamed,
+  numeric hidden text refused except known layout values, PII in part names and font-family names
+  refused, refusal cases for every REFUSE code, and mutation checks that disable the run replacement
+  / leave a header copy / keep a comment part / keep metadata / keep source part names and show the
+  verifier withholds the file. Plus CLI inspect/suggest/redact end-to-end and a
+  python-docx-generated document accepted and redacted.
+- Real Microsoft Word smoke test: a redacted fixture opened read-only in Word 16 without a repair
+  prompt and, exported to PDF, rendered the U+2588 blocks with no recoverable planted PII.
+- PF126 (presentation-only text: style/font/numbering names) is informational and does not block
+  export; docs/DOCX.md states this and the README limitation does too.
+- Docs: README supported formats, DOCX usage and limits (including batch-style review, image-pixel
+  residual risk, presentation-only text and the Unicode-normalisation gap);
+  `docs/THREAT_MODEL.md` T19-T30 for DOCX; new `docs/DOCX.md` design note (what is read, what is
+  refused, how verification works, known gaps); CONTRIBUTING notes `python-docx` is test-only.
+
 ## 0.2.0 (2026-11-06)
 
 Quality, independent evidence and scanned-PDF support.
