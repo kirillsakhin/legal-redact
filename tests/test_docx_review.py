@@ -34,6 +34,9 @@ from legal_redact.detect.base import Category
 from legal_redact.policy import Policy
 from legal_redact.review_server import make_server
 
+ATTEST = ["special_categories", "indirect_identifiers", "authorised"]
+
+
 FIXTURE = Path(__file__).parent / "fixtures" / "docx_review"
 DOCX = FIXTURE / "contract.docx"
 PDF = FIXTURE / "contract.pdf"
@@ -427,7 +430,7 @@ def test_rendered_review_round_trip_exports_a_verified_docx(fake_renderer, tmp_p
         with review_server(app) as (base, token):
             accept_and_ack(base, token)
             assert state(base, token)["can_export"] is True
-            code, body, _ = call(base, token, "/api/export", {"out": str(out)})
+            code, body, _ = call(base, token, "/api/export", {"out": str(out), "attest": ATTEST})
         assert code == 200 and body["ok"], body.get("message")
         report = body["report"]
         assert report["passed"]
@@ -479,7 +482,7 @@ def test_manual_box_reverse_maps_to_a_docx_span_and_exports(fake_renderer, tmp_p
                                  {"page": nova.page, "rect": [2.0, 2.0, 20.0, 20.0]})
             assert code == 400 and "does not cover any text" in body["error"]
             accept_and_ack(base, token)
-            code, body, _ = call(base, token, "/api/export", {"out": str(out)})
+            code, body, _ = call(base, token, "/api/export", {"out": str(out), "attest": ATTEST})
         assert code == 200 and body["ok"], body.get("message")
         assert body["report"]["passed"]
         output = docx_text(out)
@@ -494,10 +497,30 @@ def test_rendered_review_blocks_export_until_findings_are_acknowledged(fake_rend
                                 str(tmp_path / "dec.json"), renderer="word")
     try:
         with review_server(app) as (base, token):
-            code, body, _ = call(base, token, "/api/export", {"out": str(out)})
+            code, body, _ = call(base, token, "/api/export", {"out": str(out), "attest": ATTEST})
             assert code == 200 and body["ok"] is False and body["blockers"]
             assert not out.exists()
             assert call(base, token, "/api/repeats", {})[0] == 400
+    finally:
+        app.close()
+
+
+def test_export_requires_attestations_and_writes_evidence(fake_renderer, tmp_path):
+    app = DocxReviewApp.prepare(str(DOCX), fixture_session(accept=True, ack=True),
+                                str(tmp_path / "dec.json"), renderer="word")
+    out = tmp_path / "out.docx"
+    try:
+        res = app.do_export(str(out))
+        assert res["ok"] is False and "attestation" in res["message"]
+        res = app.do_export(str(out), attest=ATTEST[:2])
+        assert res["ok"] is False and res["missing_attestations"] == ["authorised"]
+        res = app.do_export(str(out), attest=ATTEST)
+        assert res["ok"], res.get("message")
+        evidence = Path(res["evidence"])
+        assert evidence.exists()
+        text = evidence.read_text(encoding="utf-8")
+        assert "Reviewer attestations" in text and "Residual risk" in text
+        assert "special-category data" in text
     finally:
         app.close()
 
@@ -506,8 +529,8 @@ def test_export_path_is_validated(fake_renderer, tmp_path):
     app = DocxReviewApp.prepare(str(DOCX), fixture_session(accept=True, ack=True),
                                 str(tmp_path / "dec.json"), renderer="word")
     try:
-        assert app.do_export(str(tmp_path / "out.pdf"))["ok"] is False
-        assert app.do_export(str(tmp_path / "missing" / "out.docx"))["ok"] is False
+        assert app.do_export(str(tmp_path / "out.pdf"), attest=ATTEST)["ok"] is False
+        assert app.do_export(str(tmp_path / "missing" / "out.docx"), attest=ATTEST)["ok"] is False
     finally:
         app.close()
 
@@ -533,10 +556,10 @@ def test_text_fallback_without_a_renderer(monkeypatch, tmp_path):
         with review_server(app) as (base, token):
             assert call(base, token, "/api/add",
                         {"page": 0, "rect": [1, 1, 20, 20]})[0] == 400
-            code, body, _ = call(base, token, "/api/export", {"out": str(out)})
+            code, body, _ = call(base, token, "/api/export", {"out": str(out), "attest": ATTEST})
             assert body["ok"] is False and body["blockers"]
             accept_and_ack(base, token)
-            code, body, _ = call(base, token, "/api/export", {"out": str(out)})
+            code, body, _ = call(base, token, "/api/export", {"out": str(out), "attest": ATTEST})
         assert code == 200 and body["ok"], body.get("message")
         assert body["report"]["passed"]
         assert out.exists()

@@ -23,9 +23,10 @@ from urllib.parse import parse_qs, urlparse
 
 import pymupdf
 
+from .evidence import build_evidence, write_evidence
 from .ocr_backends import CLOUD_OCR_ACK_LABEL, CLOUD_OCR_DISCLAIMER, EngineConfig, default_config
 from .pipeline import ExportRefused, add_repeats, export, save_decisions
-from .review import ReviewSession
+from .review import ReviewSession, attestation_payload, missing_attestations
 
 MAX_BODY = 64 * 1024
 
@@ -70,6 +71,7 @@ class ReviewApp:
             "can_export": s.can_export(),
             "out_default": self.out_default,
             "ocr": self._ocr_state(),
+            "attestation": attestation_payload(s),
         }
 
     def _ocr_state(self) -> dict:
@@ -127,19 +129,36 @@ class ReviewApp:
         self._save()
         return n
 
-    def do_export(self, out: str) -> dict:
+    def do_export(self, out: str, attest=None) -> dict:
         out_p = Path(out).expanduser().resolve()
         if out_p.suffix.lower() != ".pdf":
             return {"ok": False, "message": "output file must end in .pdf"}
         if not out_p.parent.is_dir():
             return {"ok": False, "message": "output folder does not exist"}
+        missing = missing_attestations(attest)
+        if missing:
+            return {"ok": False, "missing_attestations": missing,
+                    "message": ("reviewer attestation required before export: "
+                                + ", ".join(missing))}
+        try:
+            self.session.set_attestation(attest)
+        except ValueError as exc:
+            return {"ok": False, "message": str(exc)}
         try:
             rep = export(self.src, str(out_p), self.session, ocr=self.ocr,
                         engine_config=self.engine_config)
         except ExportRefused as exc:
             return {"ok": False, "message": str(exc), "blockers": self.session.blockers(),
                     "report": exc.report.to_dict() if exc.report else None}
-        return {"ok": True, "out": str(out_p), "report": rep.to_dict()}
+        result = {"ok": True, "out": str(out_p), "report": rep.to_dict()}
+        try:
+            evidence_path = out_p.with_name(out_p.name + ".evidence.md")
+            write_evidence(evidence_path, build_evidence(self.src, str(out_p),
+                                                         self.session, rep))
+            result["evidence"] = str(evidence_path)
+        except OSError as exc:
+            result["evidence_error"] = f"{type(exc).__name__}: {exc}"
+        return result
 
     def page_png(self, n: int, dpi: int) -> bytes:
         dpi = max(50, min(200, dpi))
@@ -232,7 +251,8 @@ def make_server(app: ReviewApp, port: int = 0):
                     elif u.path == "/api/bulk":
                         return self._json({"accepted": app.bulk(), "state": app.state()})
                     elif u.path == "/api/export":
-                        res = app.do_export(str(body.get("out") or app.out_default))
+                        res = app.do_export(str(body.get("out") or app.out_default),
+                                            attest=body.get("attest"))
                         res["state"] = app.state()
                         return self._json(res)
                     else:

@@ -5,16 +5,16 @@
 Review-first redaction of personal data in PDF and Word (`.docx`) contracts, with independent
 checks of the exported file. Local and offline by default.
 
-> **Status: pre-alpha (0.5.0).** Developed and tested on synthetic documents and public contract
+> **Status: pre-alpha (0.5.1).** Developed and tested on synthetic documents and public contract
 > text; not tested on real client documents. It does not make legal determinations, and removing
 > personal data is not anonymisation or GDPR compliance.
 
-> **GDPR-aware, not a compliance guarantee.** The tool supports redaction tasks that arise under
-> GDPR and similar regimes (data minimisation, disclosure/DSAR-style redaction) under human review,
-> with independent verification. It does not determine legal bases, does not anonymise, does not
-> comprehensively detect special-category or indirectly identifying data, and is not a DPIA,
-> records-of-processing or DSR workflow. Read [docs/COMPLIANCE.md](docs/COMPLIANCE.md) before using
-> it in a compliance process.
+> **GDPR-aware, compliance-supporting — not a compliance certificate.** The tool supports
+> redaction tasks that arise under GDPR and similar regimes (data minimisation, disclosure/DSAR-style
+> redaction) under human review, with independent verification and a workflow record. It does not
+> determine legal bases, does not anonymise, does not comprehensively detect special-category or
+> indirectly identifying data, and is not a DPIA, records-of-processing or DSR workflow. Read
+> [docs/COMPLIANCE.md](docs/COMPLIANCE.md) before using it in a compliance process.
 
 A lawyer opens a short English, text-based PDF or `.docx` contract, picks a disclosure purpose (a
 policy), reviews what the tool suggests and why, and exports a separate redacted copy. The model
@@ -141,8 +141,13 @@ legal-redact redact contract.pdf --decisions decisions.json -o contract.redacted
 
 Add `--evidence report.md` (or a `.json` path) to any `redact` command to write a compliance
 evidence report after a successful export: sizes and SHA-256 of both files, policy, decision counts,
-acknowledged findings, OCR engine/locality, every verifier check and its limits — no document text.
-See [docs/COMPLIANCE.md](docs/COMPLIANCE.md) for what it does and does not prove.
+acknowledged findings, OCR engine/locality, every verifier check and its limits, a residual-risk
+section (warnings, acknowledged findings, detector coverage gaps), a DPIA/ROPA inputs table, and the
+reviewer attestations — no document text. Optional per-matter fields `--controller`, `--matter`,
+`--purpose`, `--reviewer` and `--attest special_categories,indirect_identifiers,authorised` are
+recorded in the report. The review page collects the attestations itself before export and writes
+`<output>.evidence.md` automatically. See [docs/COMPLIANCE.md](docs/COMPLIANCE.md) for what the
+report does and does not prove.
 
 `.docx` uses the same commands; `inspect`, `suggest`, `redact` and `review` detect the format from
 the file. The review page needs Microsoft Word (Windows) or LibreOffice to show the rendered layout;
@@ -389,7 +394,7 @@ empty shims kept only so the 1.x to 2.x upgrade is safe, and carry no licence of
 ## Development
 
 ```
-pytest                                   # 318 tests, core dependencies only; OCR tests skip without Tesseract
+pytest                                   # 322 tests, core dependencies only; OCR tests skip without Tesseract
 legal-redact bench-export --n 15         # can the verifier actually fail?
 ```
 

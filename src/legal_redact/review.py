@@ -16,6 +16,39 @@ from .policy import Decision
 
 MANUAL = "MANUAL"
 
+# Reviewer attestations required before an export. They do not make the tool a
+# compliance certificate: they are the human steps a redaction workflow depends on
+# (the detectors do not cover these), recorded so the evidence report can show them.
+ATTESTATIONS: dict[str, str] = {
+    "special_categories": (
+        "I checked for special-category data (Art. 9: health, genetic, biometric, religion, "
+        "sexual orientation, criminal-offence data) manually; the detectors do not cover it "
+        "comprehensively."
+    ),
+    "indirect_identifiers": (
+        "I considered indirect identifiers and re-identification risk (context, rare facts, "
+        "combinations of quasi-identifiers, small populations)."
+    ),
+    "authorised": (
+        "I am authorised to make this disclosure or export, applied the right policy, and "
+        "reviewed the pre-flight findings and limitations."
+    ),
+}
+REQUIRED_ATTESTATIONS: tuple[str, ...] = tuple(ATTESTATIONS)
+
+
+def attestation_payload(session: "ReviewSession") -> dict:
+    """The review page needs the required statements and which ones are already given."""
+    return {"required": [{"id": i, "label": ATTESTATIONS[i]} for i in REQUIRED_ATTESTATIONS],
+            "given": list(session.attestation),
+            "context": dict(session.context)}
+
+
+def missing_attestations(ids) -> list[str]:
+    """Required attestation ids not present in `ids` (unknown ids are ignored here)."""
+    given = {str(i) for i in (ids or ())}
+    return [i for i in REQUIRED_ATTESTATIONS if i not in given]
+
 
 class ReviewSession:
     def __init__(self, decisions: list[Decision], findings: list[Finding],
@@ -28,6 +61,11 @@ class ReviewSession:
         self.ocr_info = ocr_info
         # Policy name recorded by suggest; used by the compliance evidence report.
         self.policy = policy
+        # Attestation ids the reviewer completed for this export (see ATTESTATIONS).
+        self.attestation: list[str] = []
+        # Optional per-matter context for the evidence report (controller, matter,
+        # purpose, reviewer). Configuration only, never document text.
+        self.context: dict[str, str] = {}
 
     # --- decisions ---------------------------------------------------------
     def accept(self, i: int) -> None:
@@ -64,6 +102,18 @@ class ReviewSession:
     def acknowledge(self, code: str, on: bool = True) -> None:
         (self.acknowledged.add if on else self.acknowledged.discard)(code)
 
+    def set_attestation(self, ids) -> None:
+        """Record completed attestation ids; raises ValueError on an unknown id."""
+        known = [i for i in dict.fromkeys(str(x) for x in ids) if i]
+        unknown = [i for i in known if i not in ATTESTATIONS]
+        if unknown:
+            raise ValueError(f"unknown attestation id(s): {', '.join(unknown)}; "
+                             f"expected {', '.join(REQUIRED_ATTESTATIONS)}")
+        self.attestation = known
+
+    def missing_attestations(self) -> list[str]:
+        return [i for i in REQUIRED_ATTESTATIONS if i not in self.attestation]
+
     # --- gate --------------------------------------------------------------
     def pending(self) -> list[int]:
         return [i for i, d in enumerate(self.decisions) if d.status == "pending"]
@@ -93,5 +143,8 @@ class ReviewSession:
             "manual_additions": sum(d.source == "manual" for d in self.decisions),
             "acknowledged_findings": sorted(self.acknowledged),
             "policy": self.policy,
+            "attestations": list(self.attestation),
+            "missing_attestations": self.missing_attestations(),
+            "context": dict(self.context),
             "blockers": self.blockers(),
         }

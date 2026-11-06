@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.5.1 (2026-11-06)
+
+Compliance-support quick wins: the evidence report becomes a per-matter workflow record, and the
+review page makes the human steps explicit before export.
+
+- Evidence report: optional per-matter context (`--controller`, `--matter`, `--purpose`,
+  `--reviewer`), a reviewer-attestation section (with explicit NOT RECORDED when none was given),
+  a residual-risk section (verifier WARN/FAIL checks, acknowledged pre-flight findings, and the
+  categories the detectors do not cover: special-category data, indirect identifiers,
+  handwriting/stamps), and a DPIA/ROPA inputs table. Still no document text, still not a
+  compliance certificate.
+- Reviewer attestations required before export from the review page (both PDF and DOCX): three
+  statements (special-category data checked manually, indirect identifiers considered, authorised
+  disclosure); the server enforces them and writes `<output>.evidence.md` automatically. The CLI
+  records the same with `--attest` (unknown ids are refused).
+- Positioning sharpened to "GDPR-aware, compliance-supporting — not a compliance certificate";
+  README/COMPLIANCE/TESTING explain what the report does and does not prove.
+- Tests: 4 new (review-page attestation gate + evidence auto-write for PDF and DOCX; CLI context/
+  attestation recording; unknown-attestation refusal). 322 tests green.
+
 ## 0.5.0 (2026-11-06)
 
 DOCX review page and DOCX image redaction. `legal-redact review file.docx` now opens the same local
@@ -106,7 +126,7 @@ rendered PDF is a view, never the exported file.
   metadata-free with pixel equality, PNG tEXt/pHYs stripping, edited+untouched re-encode, the
   low-contrast `I10` fixture exporting PASS with contrast-based ink while uniform blanks still
   refuse, tiny-text `I22` going through PF133, the strengthened PF131 wording, V112 naming unread
-  images (including with OCR not used), and a contrast-ink unit test. Full suite 318 passed with the
+  images (including with OCR not used), and a contrast-ink unit test. Full suite 322 passed with the
   existing PDF/OCR tests unchanged.
 - GDPR positioning (with the compliance scope): purpose presets `contract-sharing`,
   `dsar-disclosure` and `publication` (schema-valid, every category stated, strictness ordering

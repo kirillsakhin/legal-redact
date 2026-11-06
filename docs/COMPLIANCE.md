@@ -4,10 +4,11 @@ This note is written for a legal audience. It maps the tool to GDPR-relevant *re
 states explicitly what it does **not** certify. It is not legal advice, and the tool does not decide
 whether any processing or disclosure is lawful.
 
-**One-line description to use:** *legal-redact is a GDPR-aware, human-in-the-loop redaction workflow:
-it finds candidate personal data, a lawyer decides, the export really removes the content, and an
-independent verifier withholds the file if anything was missed. It is not a GDPR compliance
-solution and does not anonymise documents.*
+**One-line description to use:** *legal-redact is a GDPR-aware, compliance-supporting redaction
+workflow: it finds candidate personal data, a lawyer decides, the export really removes the content,
+an independent verifier withholds the file if anything was missed, and the workflow writes a record
+of what was checked and decided. It is not a GDPR compliance certificate and does not anonymise
+documents.*
 
 ## What the tool is for
 
@@ -49,6 +50,15 @@ what the reviewer chose to remove is gone — it cannot prove the reviewer chose
 should be removed. Plan your review process accordingly (second-person check, sampling, or a
 checklist for context-dependent data).
 
+## Reviewer attestations (v0.5.1)
+
+Before exporting from the review page, the reviewer must tick three statements (and the CLI can
+record the same with `--attest`): special-category data checked manually, indirect identifiers
+considered, and authority to make the disclosure. They are the reviewer's own statements — the tool
+does not verify them and they do not make the output compliant. Their purpose is to make the human
+steps explicit and to record them in the evidence report, so the file shows what a reviewer
+attested to, not just that a button was pressed.
+
 ## The evidence report: what it records (and what it does not prove)
 
 `legal-redact redact … --evidence report.md` (or a `.json` path) writes, after a successful export:
@@ -60,6 +70,14 @@ checklist for context-dependent data).
 - the OCR engine (name, version, local/cloud, cloud approval) when OCR was used;
 - every verifier check (id, status, detail) and the verifier's own out-of-scope list;
 - the no-network statement and the "not a compliance certificate" disclaimer.
+
+It also contains, since v0.5.1: the per-matter context you supply (`--controller`, `--matter`,
+`--purpose`, `--reviewer`), the reviewer attestations that were given or the explicit "NOT RECORDED"
+marker, a **residual-risk section** (verifier warnings such as unverified image pixels, acknowledged
+pre-flight findings, and the categories the detectors do not cover: special-category data, indirect
+identifiers, handwriting/stamps), and a **DPIA/ROPA inputs table** with purpose, data categories,
+volumes, processing environment, technical measures and residual risks — the fields the workflow can
+supply, with retention, transfers and legal basis left for the controller to complete.
 
 It deliberately contains no document text. It proves what the tool checked and what the reviewer
 decided; it does not prove that detection was complete, that the file is anonymous, or that the

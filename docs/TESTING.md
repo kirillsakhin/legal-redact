@@ -34,7 +34,7 @@ git describe --tags --exact-match HEAD   # expect: v0.3.0
 Confirm the environment (the `.venv` here already has the ML extras and models):
 ```powershell
 .\.venv\Scripts\legal-redact.exe --help
-.\.venv\Scripts\python.exe -m pytest -q   # expect: 318 passed in this checkout (OCR tests skip without Tesseract; the count grows as tests are added)
+.\.venv\Scripts\python.exe -m pytest -q   # expect: 322 passed in this checkout (OCR tests skip without Tesseract; the count grows as tests are added)
 ```
 
 ## B. Fresh clone (published version)
@@ -45,7 +45,7 @@ cd legal-redact-test
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"      # core + dev tools, no model download
-.\.venv\Scripts\python.exe -m pytest -q                    # expect: 318 passed in this checkout (grows as tests are added)
+.\.venv\Scripts\python.exe -m pytest -q                    # expect: 322 passed in this checkout (grows as tests are added)
 ```
 
 Full detector ensemble (Presidio + GLiNER; needed to test names/addresses; the weights download
@@ -249,14 +249,19 @@ In each case `redact` must exit non-zero and leave no output file.
 ## 6. Track E — regression and honesty checks
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q                 # 318 passed in this checkout (grows with docs/tests)
+.\.venv\Scripts\python.exe -m pytest -q                 # 322 passed in this checkout (grows with docs/tests)
 .\.venv\Scripts\legal-redact.exe bench-export --n 3     # "every injected leak caught" (13/13)
 ```
 
-Add `--evidence testdocs\evidence.md` to any `redact` command to write the compliance evidence
-report: source/redacted SHA-256, policy, decision counts, acknowledged findings, OCR engine/locality,
-every verifier check and the things it does not cover, plus the "not a compliance certificate"
-disclaimer. It contains no document text; see docs/COMPLIANCE.md for what it does and does not prove.
+In the review page, export is blocked until you tick the three reviewer attestations (special-
+category data checked, indirect identifiers considered, authorised disclosure); the page then writes
+`<output>.evidence.md` next to the redacted file. On the command line, add `--evidence
+testdocs\evidence.md` (plus optional `--controller`, `--matter`, `--purpose`, `--reviewer` and
+`--attest special_categories,indirect_identifiers,authorised`) to write the compliance evidence
+report: hashes, policy, decision counts, acknowledgements, OCR engine/locality, verifier checks and
+limits, the residual-risk section and the DPIA/ROPA inputs table, plus the "not a compliance
+certificate" disclaimer. It contains no document text; see docs/COMPLIANCE.md for what it does and
+does not prove.
 
 Optional, heavier (needs the ML extras): `legal-redact bench --suite holdout4 --detector ensemble`
 runs the spent home-field suite; `legal-redact bench-h2h --suite indep --work DIR` runs the

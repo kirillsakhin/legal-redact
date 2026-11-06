@@ -318,6 +318,8 @@ def _review_docx(args) -> int:
         print(f"REFUSE PF104 could not prepare the review session ({type(exc).__name__}).",
               file=sys.stderr)
         return 1
+    if not _apply_context_and_attestation(session, args):
+        return 2
     try:
         serve_docx(args.pdf, session, dec, args.port, open_browser=not args.no_browser,
                    engine_config=config, ocr=not args.no_ocr)
@@ -326,6 +328,45 @@ def _review_docx(args) -> int:
               file=sys.stderr)
         return 1
     return 0
+
+
+def _add_context_args(parser: argparse.ArgumentParser) -> None:
+    """Per-matter context recorded in the compliance evidence report (optional)."""
+    for name, metavar, help_text in (
+        ("controller", "NAME", "controller / firm name for the evidence report"),
+        ("matter", "REF", "matter or data-subject-request reference for the evidence report"),
+        ("purpose", "TEXT", "processing purpose for the evidence report"),
+        ("reviewer", "NAME", "reviewer name for the evidence report"),
+    ):
+        parser.add_argument(f"--{name}", default=None, metavar=metavar, help=help_text)
+
+
+def _apply_context_and_attestation(session, args, *, require_attestation: bool = False) -> bool:
+    """Record the per-matter context and (optionally) the CLI attestations.
+
+    Returns False after printing a clean refusal when the caller supplied an unknown
+    attestation id. The review page collects the attestations itself; the CLI is
+    explicit via --attest so automation stays scriptable.
+    """
+    context = {}
+    for key in ("controller", "matter", "purpose", "reviewer"):
+        value = getattr(args, key, None)
+        if value:
+            context[key] = str(value).strip()
+    session.context = context
+    attest = getattr(args, "attest", None)
+    if attest:
+        try:
+            session.set_attestation([a.strip() for a in str(attest).split(",") if a.strip()])
+        except ValueError as exc:
+            print(f"REFUSE {exc}", file=sys.stderr)
+            return False
+    elif require_attestation:
+        print("REFUSE reviewer attestation required: pass --attest "
+              + ",".join(("special_categories", "indirect_identifiers", "authorised")),
+              file=sys.stderr)
+        return False
+    return True
 
 
 def _review(args) -> int:
@@ -357,6 +398,8 @@ def _review(args) -> int:
     except (OcrError, OcrUnavailable, EngineConfigError) as exc:
         print(f"REFUSE PF020 OCR engine failed: {exc}", file=sys.stderr)
         return 1
+    if not _apply_context_and_attestation(session, args):
+        return 2
     serve(args.pdf, session, dec, args.port, open_browser=not args.no_browser,
           ocr=not args.no_ocr, engine_config=config)
     return 0
@@ -386,6 +429,8 @@ def _redact(args) -> int:
     except EngineConfigError as exc:
         print(f"REFUSE PF020 OCR engine configuration error: {exc}", file=sys.stderr)
         return 1
+    if not _apply_context_and_attestation(s, args):
+        return 2
     for code in filter(None, args.ack.split(",")):
         s.acknowledge(code.strip())
     if args.accept_proposed:
@@ -478,6 +523,7 @@ def main(argv: list[str] | None = None) -> int:
     rv.add_argument("--no-ocr", action="store_true",
                     help="do not use OCR; refuse pages without a text layer (old behaviour)")
     _add_ocr_args(rv)
+    _add_context_args(rv)
     hh = sub.add_parser("bench-h2h", help="score our tool and external tools' output PDFs identically")
     hh.add_argument("--work", required=True, help="working folder (sources and our outputs go here)")
     hh.add_argument("--suite", default="holdout4", choices=["holdout4", "indep"],
@@ -487,6 +533,11 @@ def main(argv: list[str] | None = None) -> int:
                     help="an external tool's results.json (from its own harness); repeatable")
     rd.add_argument("--accept-repeats", action="store_true",
                     help="also accept every other occurrence of text you accepted (explicit bulk action)")
+    _add_context_args(rd)
+    rd.add_argument("--attest", default=None, metavar="IDS",
+                    help="comma-separated reviewer attestations recorded in the evidence "
+                         "report: special_categories,indirect_identifiers,authorised (the "
+                         "review page collects these itself before export)")
     rd.add_argument("--evidence", default=None, metavar="PATH",
                     help="after a successful export, write a compliance evidence report "
                          "(Markdown; use a .json path for JSON). No document text is included")

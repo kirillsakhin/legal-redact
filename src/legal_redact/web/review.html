@@ -122,6 +122,11 @@ aside{overflow-x:hidden}
       <ul id="list"></ul>
     </section>
     <section>
+      <h2>Reviewer attestations</h2>
+      <div id="attest"></div>
+      <div class="note">Required before export. These are your own statements (the tool does not verify them) and are recorded in the evidence report.</div>
+    </section>
+    <section>
       <h2>Export</h2>
       <label for="out" class="note">Write redacted copy to</label>
       <input type="text" id="out">
@@ -167,8 +172,29 @@ function render() {
   const banner = $("modebanner");
   if (S.review_note) { banner.textContent = S.review_note; banner.hidden = false; }
   else { banner.hidden = true; banner.replaceChildren(); }
-  renderPage(); renderGate(); renderFindings(); renderList(); renderCloudWarning();
+  renderPage(); renderGate(); renderFindings(); renderList(); renderCloudWarning(); renderAttestation();
   if (!$("out").value) $("out").value = S.out_default;
+}
+
+function renderAttestation() {
+  const box = $("attest");
+  box.replaceChildren();
+  const required = (S.attestation && S.attestation.required) || [];
+  const given = (S.attestation && S.attestation.given) || [];
+  if (!required.length) {
+    box.append(el("div", {className: "note", textContent: "No attestations configured."}));
+    return;
+  }
+  required.forEach(item => {
+    const cb = el("input", {type: "checkbox", id: "attest-" + item.id,
+                            checked: given.includes(item.id)});
+    box.append(el("label", {htmlFor: cb.id, className: "note"}, cb, " " + item.label));
+  });
+}
+
+function attestationIds() {
+  return [...document.querySelectorAll("#attest input[type=checkbox]:checked")]
+    .map(c => c.id.slice("attest-".length));
 }
 
 function renderCloudWarning() {
@@ -376,10 +402,20 @@ $("bulk").onclick = async () => {
 
 $("export").onclick = async () => {
   const btn = $("export"), res = $("result"); btn.disabled = true; res.replaceChildren(el("div", {className: "note", textContent: "Writing and verifying…"}));
+  const attest = attestationIds();
+  const required = ((S.attestation && S.attestation.required) || []).map(x => x.id);
+  const missing = required.filter(x => !attest.includes(x));
+  if (missing.length) {
+    res.replaceChildren(el("div", {className: "blockers", textContent: "Tick the reviewer attestations before exporting: " + missing.join(", ")}));
+    btn.disabled = false;
+    return;
+  }
   try {
-    const r = await api("/api/export", {out: $("out").value}); S = r.state; render();
+    const r = await api("/api/export", {out: $("out").value, attest}); S = r.state; render();
     res.replaceChildren();
     res.append(el("div", {className: r.ok ? "ready" : "blockers", textContent: r.ok ? `Written: ${r.out}` : `Not exported: ${r.message}`}));
+    if (r.ok && r.evidence) res.append(el("div", {className: "note", textContent: `Evidence report: ${r.evidence}`}));
+    if (r.ok && r.evidence_error) res.append(el("div", {className: "blockers", textContent: `Evidence report could not be written: ${r.evidence_error}`}));
     if (!r.ok && r.report && r.report.checks.some(c => c.status === "FAIL" && ["V01", "V02", "V102", "V103"].includes(c.id)))
       res.append(el("div", {className: "note", textContent: "Redacted text is still readable elsewhere in the document. Try 'Find repeats' to propose the other occurrences, decide them, then export again."}));
     if (!r.ok && r.blockers && r.blockers.length) { const ul = el("ul", {className: "blockers"}); r.blockers.forEach(b => ul.append(el("li", {textContent: b}))); res.append(ul); }

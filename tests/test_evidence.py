@@ -115,3 +115,57 @@ def test_no_evidence_when_export_is_refused(tmp_path):
                  "--evidence", str(evidence)]) == 1
     assert not out.exists()
     assert not evidence.exists()
+
+def test_evidence_records_context_attestation_and_residual_risk(tmp_path):
+    src = tmp_path / "contract.pdf"
+    _synthetic_pdf(src)
+    decisions = tmp_path / "decisions.json"
+    assert main(["suggest", str(src), "-o", str(decisions), "--detector", "rules",
+                 "--policy", "dsar-disclosure"]) == 0
+    _accept_all(decisions)
+    out = tmp_path / "redacted.pdf"
+    evidence = tmp_path / "evidence.json"
+    assert main(["redact", str(src), "--decisions", str(decisions), "-o", str(out),
+                 "--controller", "Example Firm LLP", "--matter", "DSAR-2026-17",
+                 "--purpose", "response to a data-subject access request",
+                 "--reviewer", "A. Lawyer",
+                 "--attest", "special_categories,indirect_identifiers,authorised",
+                 "--evidence", str(evidence)]) == 0
+    data = json.loads(evidence.read_text(encoding="utf-8"))
+    assert data["context"]["controller"] == "Example Firm LLP"
+    assert data["context"]["matter"] == "DSAR-2026-17"
+    assert data["context"]["reviewer"] == "A. Lawyer"
+    assert data["attestation"]["given"] == ["special_categories", "indirect_identifiers",
+                                            "authorised"]
+    assert all(row["attested"] for row in data["attestation"]["rows"])
+    residual = data["residual_risk"]
+    assert residual["detector_coverage"]["detected_categories"]
+    assert any("special-category" in item
+               for item in residual["detector_coverage"]["not_detected_comprehensively"])
+    markdown = evidence.with_suffix(".md")
+    assert main(["redact", str(src), "--decisions", str(decisions), "-o",
+                 str(tmp_path / "r2.pdf"), "--controller", "Example Firm LLP",
+                 "--attest", "special_categories,indirect_identifiers,authorised",
+                 "--evidence", str(markdown)]) == 0
+    text = markdown.read_text(encoding="utf-8")
+    for heading in ("## Context", "## Reviewer attestations", "## Residual risk",
+                    "## Inputs for your DPIA / ROPA"):
+        assert heading in text
+    assert "Example Firm LLP" in text and "A. Lawyer" not in text  # reviewer not passed here
+    assert "special-category data" in text          # coverage gap is stated
+    assert "to be completed by the controller" in text
+    assert "not a compliance certificate" in text
+
+
+def test_cli_unknown_attestation_is_refused(tmp_path):
+    src = tmp_path / "contract.pdf"
+    _synthetic_pdf(src)
+    decisions = tmp_path / "decisions.json"
+    assert main(["suggest", str(src), "-o", str(decisions), "--detector", "rules",
+                 "--policy", "contract-sharing"]) == 0
+    _accept_all(decisions)
+    out = tmp_path / "redacted.pdf"
+    evidence = tmp_path / "evidence.md"
+    assert main(["redact", str(src), "--decisions", str(decisions), "-o", str(out),
+                 "--attest", "special_categories,bogus", "--evidence", str(evidence)]) == 2
+    assert not out.exists() and not evidence.exists()

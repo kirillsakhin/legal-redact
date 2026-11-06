@@ -191,7 +191,7 @@ improvement of the same pipeline.
 ## Not measured
 
 - Real documents of any kind. Human reviewers (the reviewer error rates are simulated).
-- `.docx`: unit-tested (318 tests, including adversarial fixtures) and independently audited; one
+- `.docx`: unit-tested (322 tests, including adversarial fixtures) and independently audited; one
   measured suite for embedded-image redaction (above), but no benchmark of document-level redaction
   on real Word layouts. Its guarantees are fail-closed refusals and the verifier's independent
   re-read, not a general measured leak rate.

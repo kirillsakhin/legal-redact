@@ -30,9 +30,10 @@ from pathlib import Path
 
 import pymupdf
 
+from ..evidence import build_evidence, write_evidence
 from ..ocr_backends import CLOUD_OCR_ACK_LABEL, CLOUD_OCR_DISCLAIMER, EngineConfig
 from ..pipeline import ExportRefused, save_decisions
-from ..review import ReviewSession
+from ..review import ReviewSession, attestation_payload, missing_attestations
 from ..review_server import make_server
 from . import images as image_tools
 from .align import Alignment, align
@@ -268,6 +269,7 @@ class DocxReviewApp:
             "blockers": self.session.blockers(),
             "can_export": self.session.can_export(),
             "out_default": self.out_default,
+            "attestation": attestation_payload(self.session),
         }
 
     def _label(self, page: int) -> str:
@@ -341,12 +343,21 @@ class DocxReviewApp:
             self.png_cache[key] = self._pdf[page].get_pixmap(dpi=dpi).tobytes("png")
         return self.png_cache[key]
 
-    def do_export(self, out: str) -> dict:
+    def do_export(self, out: str, attest=None) -> dict:
         out_path = Path(out).expanduser().resolve()
         if out_path.suffix.lower() != ".docx":
             return {"ok": False, "message": "output file must end in .docx"}
         if not out_path.parent.is_dir():
             return {"ok": False, "message": "output folder does not exist"}
+        missing = missing_attestations(attest)
+        if missing:
+            return {"ok": False, "missing_attestations": missing,
+                    "message": ("reviewer attestation required before export: "
+                                + ", ".join(missing))}
+        try:
+            self.session.set_attestation(attest)
+        except ValueError as exc:
+            return {"ok": False, "message": str(exc)}
         try:
             report = export_docx(self.src, str(out_path), self.session, ocr=self.ocr,
                                  engine_config=self.engine_config)
@@ -354,7 +365,15 @@ class DocxReviewApp:
             return {"ok": False, "message": str(exc),
                     "blockers": self.session.blockers(),
                     "report": exc.report.to_dict() if exc.report else None}
-        return {"ok": True, "out": str(out_path), "report": report.to_dict()}
+        result = {"ok": True, "out": str(out_path), "report": report.to_dict()}
+        try:
+            evidence_path = out_path.with_name(out_path.name + ".evidence.md")
+            write_evidence(evidence_path, build_evidence(self.src, str(out_path),
+                                                         self.session, report))
+            result["evidence"] = str(evidence_path)
+        except OSError as exc:
+            result["evidence_error"] = f"{type(exc).__name__}: {exc}"
+        return result
 
 
 def serve_docx(src: str, session: ReviewSession, decisions_path: str | None,

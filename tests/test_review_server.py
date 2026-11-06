@@ -1,4 +1,8 @@
 import json
+from pathlib import Path
+
+ATTEST = ["special_categories", "indirect_identifiers", "authorised"]
+
 import threading
 import urllib.error
 import urllib.request
@@ -83,7 +87,7 @@ def test_decide_add_ack_and_export_flow(server):
     s = json.loads(body)["state"]
     assert s["can_export"] and any(x["source"] == "manual" for x in s["decisions"])
     out = tmp / "out.pdf"
-    res = json.loads(call(base, token, "/api/export", {"out": str(out)})[1])
+    res = json.loads(call(base, token, "/api/export", {"out": str(out), "attest": ATTEST})[1])
     assert res["ok"] and out.exists() and res["report"]["passed"]
     saved = json.loads((tmp / "dec.json").read_text())          # autosave happened, text-free
     assert len(saved["decisions"]) == len(s["decisions"])
@@ -93,10 +97,40 @@ def test_decide_add_ack_and_export_flow(server):
 
 def test_export_is_refused_while_decisions_are_open_and_validates_output_path(server):
     base, token, _, tmp = server
-    res = json.loads(call(base, token, "/api/export", {"out": str(tmp / "o.pdf")})[1])
+    res = json.loads(call(base, token, "/api/export", {"out": str(tmp / "o.pdf"), "attest": ATTEST})[1])
     assert not res["ok"] and res["blockers"] and not (tmp / "o.pdf").exists()
-    assert not json.loads(call(base, token, "/api/export", {"out": str(tmp / "o.txt")})[1])["ok"]
-    assert not json.loads(call(base, token, "/api/export", {"out": str(tmp / "nodir" / "o.pdf")})[1])["ok"]
+    assert not json.loads(call(base, token, "/api/export", {"out": str(tmp / "o.txt"), "attest": ATTEST})[1])["ok"]
+    assert not json.loads(call(base, token, "/api/export", {"out": str(tmp / "nodir" / "o.pdf"), "attest": ATTEST})[1])["ok"]
+
+
+
+def test_export_requires_attestations_and_writes_evidence(server):
+    base, token, _, tmp = server
+    for dec in state(base, token)["decisions"]:
+        call(base, token, "/api/decide", {"i": dec["i"], "status": "accepted"})
+    for f in state(base, token)["findings"]:
+        if f["severity"] == "review":
+            call(base, token, "/api/ack", {"code": f["code"], "on": True})
+    out = tmp / "out.pdf"
+    # No attestations: the server refuses and writes nothing.
+    res = json.loads(call(base, token, "/api/export", {"out": str(out)})[1])
+    assert res["ok"] is False and "attestation" in res["message"]
+    assert not out.exists()
+    # One missing: still refused, the missing id is reported.
+    res = json.loads(call(base, token, "/api/export",
+                          {"out": str(out), "attest": ATTEST[:2]})[1])
+    assert res["ok"] is False and res["missing_attestations"] == ["authorised"]
+    # Complete: export succeeds and the evidence report is written next to the output.
+    res = json.loads(call(base, token, "/api/export",
+                          {"out": str(out), "attest": ATTEST})[1])
+    assert res["ok"] and res["report"]["passed"]
+    evidence = Path(res["evidence"])
+    assert evidence.exists()
+    text = evidence.read_text(encoding="utf-8")
+    assert "Reviewer attestations" in text and "Residual risk" in text
+    assert "Inputs for your DPIA / ROPA" in text
+    assert "not a compliance certificate" in text
+    assert "special_categories" in json.dumps(res["state"]["attestation"])
 
 
 def test_bad_input_is_a_400_not_a_crash(server):
